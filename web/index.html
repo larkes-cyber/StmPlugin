@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>STE AI-ассистент</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo">◆</span> STE Slicer · <b>AI-ассистент</b></div>
+    <div id="status" class="pill idle">Готов</div>
+    <div class="actions">
+      <button id="btn-shot" class="ghost" title="Сохранить скриншот переписки (PNG)">📸 Скриншот</button>
+      <button id="btn-reset" class="ghost" title="Начать новый диалог">↺ Новый диалог</button>
+      <button id="btn-settings" class="ghost">⚙ Настройки</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <main class="chat">
+      <div id="scroll" class="scroll">
+        <div id="messages" class="messages">
+          <div id="welcome" class="welcome">
+            <h2>Опишите задачу печати</h2>
+            <p>Прикрепите модель (STL/OBJ/3MF) и, если нужно, фото. Ассистент выберет режим 3D/5D, профиль,
+              материал, ориентацию и настройки, нарежет модель и объяснит решения.</p>
+            <div class="examples">
+              <button class="example">Кронштейн под нагрузку, PETG, без поддержек</button>
+              <button class="example">Рабочее колесо насоса для 10% HCl при t &lt; 90 °C, оптимизируй поддержки</button>
+              <button class="example">Тонкостенная ваза, быстро и красиво</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="slice-bar" class="slice-bar hidden">
+        <span id="slice-label">Слайсинг…</span>
+        <div class="progress"><div id="slice-progress"></div></div>
+        <span id="slice-pct">0%</span>
+      </div>
+
+      <form id="composer" class="composer">
+        <div id="attachments" class="attachments"></div>
+        <div class="row">
+          <label class="attach" title="Прикрепить STL/OBJ/3MF/JPG/PNG">
+            <input type="file" id="file-input" multiple accept=".stl,.obj,.3mf,.jpg,.jpeg,.png" hidden>📎
+          </label>
+          <textarea id="input" rows="2" placeholder="Например: «Кронштейн под нагрузку, PETG, без поддержек»"></textarea>
+          <button type="submit" id="btn-send" class="primary">Отправить</button>
+          <button type="button" id="btn-stop" class="danger hidden">■ Стоп</button>
+        </div>
+        <div class="hint">Enter — отправить · Shift+Enter — новая строка · файлы можно перетащить в окно</div>
+      </form>
+    </main>
+
+    <aside class="side">
+      <section>
+        <h3>Слайсер сейчас</h3>
+        <div id="state" class="state muted">Нет данных</div>
+      </section>
+      <section>
+        <h3>MCP-сервер</h3>
+        <div class="muted small">Те же инструменты доступны внешним агентам:</div>
+        <code id="mcp-url" class="mcp-url">—</code>
+        <div id="tool-count" class="muted small"></div>
+      </section>
+    </aside>
+  </div>
+
+  <div id="drop" class="drop hidden">Отпустите файлы, чтобы прикрепить</div>
+
+  <dialog id="settings">
+    <form id="settings-form" method="dialog">
+      <h3>Подключение к LLM</h3>
+      <label>Base URL<input name="base_url" placeholder="https://…/v1" autocomplete="off"></label>
+      <label>API key<input name="api_key" type="password" autocomplete="off" placeholder="не изменять"></label>
+      <div id="key-hint" class="muted small"></div>
+      <label>Модель<input name="model" autocomplete="off"></label>
+      <label class="check"><input name="verify_ssl" type="checkbox"> Проверять SSL-сертификат</label>
+      <h3>Результаты</h3>
+      <label>Папка для results/<input name="output_dir" autocomplete="off"></label>
+      <div id="settings-msg" class="small"></div>
+      <div class="dialog-actions">
+        <button type="button" id="btn-test" class="ghost">Проверить подключение</button>
+        <span class="spacer"></span>
+        <button type="button" id="btn-cancel" class="ghost">Закрыть</button>
+        <button type="submit" id="btn-save" class="primary">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>

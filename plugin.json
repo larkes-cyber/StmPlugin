@@ -1,0 +1,8 @@
+{
+    "name": "AI Assistant",
+    "author": "Team",
+    "version": "1.0.0",
+    "description": "LLM chat assistant for STE Slicer: MCP tools, geometry analysis, auto-orientation, explained settings",
+    "api": 5,
+    "i18n-catalog": "steslicer"
+}

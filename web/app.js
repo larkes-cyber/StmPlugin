@@ -11,7 +11,7 @@
     move_object: "Перемещение", center_object: "Центрирование", rotate_object: "Поворот",
     scale_object: "Масштаб", arrange_all: "Авторасстановка", delete_object: "Удаление",
     analyze_geometry: "Анализ геометрии", suggest_orientations: "Подбор ориентации",
-    apply_orientation: "Применение ориентации", start_slicing: "Слайсинг",
+    apply_orientation: "Применение ориентации", get_scene_snapshot: "Снимок сцены", start_slicing: "Слайсинг",
     get_slicing_status: "Статус слайсинга", get_slicing_result: "Результат слайсинга",
     export_gcode: "Экспорт G-code", save_project_3mf: "Сохранение 3MF", export_results: "Сохранение результатов"
   };
@@ -42,7 +42,11 @@
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
     };
     return fetch(path, opts).then(function (r) {
-      return r.json().then(function (data) {
+      return r.text().then(function (text) {
+        var data;
+        try { data = text ? JSON.parse(text) : {}; } catch (e) {
+          throw new Error("Сервер плагина вернул не JSON (HTTP " + r.status + " на " + path + "). Подробности — в логе слайсера.");
+        }
         if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
         return data;
       });
@@ -228,6 +232,14 @@
         refreshStateSoon();
         break;
       case "slice_progress": setSliceBar("processing", ev.progress); break;
+      case "snapshot":
+        var snap = append(div("card snapshot", '<div class="c-title">👁 ' + esc(ev.caption || "Снимок сцены") +
+          ' <span class="muted small">— агент смотрит на модель</span></div>'));
+        var img = document.createElement("img");
+        img.src = ev.image; img.alt = "Снимок сцены";
+        img.onload = function () { if (stickToBottom) $("scroll").scrollTop = $("scroll").scrollHeight; };
+        snap.appendChild(img);
+        break;
       case "file_saved":
         var check = ev.check ? " · слоёв: " + ev.check.layers + (ev.check.valid ? " ✓" : " ⚠ " + ev.check.problems.join("; ")) : "";
         append(div("card", "💾 " + (ev.kind === "gcode" ? "G-code" : "Проект 3MF") + ": <code>" + esc(ev.path) + "</code>" + esc(check)));
@@ -279,17 +291,25 @@
   }
 
   // ---------------------------------------------------------------- attachments
+  var ALLOWED_EXT = ["stl", "obj", "3mf", "jpg", "jpeg", "png", "docx", "txt", "md"];
+  var DOC_EXT = ["docx", "txt", "md"];
+
   function addFiles(list) {
     Array.prototype.forEach.call(list, function (file) {
       var ext = file.name.split(".").pop().toLowerCase();
-      if (["stl", "obj", "3mf", "jpg", "jpeg", "png"].indexOf(ext) < 0) {
-        append(div("msg error", "Неподдерживаемый файл: " + esc(file.name) + " (нужны STL/OBJ/3MF/JPG/PNG)"));
+      if (ALLOWED_EXT.indexOf(ext) < 0) {
+        append(div("msg error", "Неподдерживаемый файл: " + esc(file.name) +
+          " (модели STL/OBJ/3MF, фото JPG/PNG, документы DOCX/TXT)"));
         return;
       }
       var reader = new FileReader();
       reader.onload = function () {
         var url = reader.result;
-        attachments.push({ name: file.name, data: url.slice(url.indexOf(",") + 1), preview: /^(jpg|jpeg|png)$/.test(ext) ? url : null });
+        attachments.push({
+          name: file.name, data: url.slice(url.indexOf(",") + 1),
+          preview: /^(jpg|jpeg|png)$/.test(ext) ? url : null,
+          kind: DOC_EXT.indexOf(ext) >= 0 ? "doc" : /^(jpg|jpeg|png)$/.test(ext) ? "image" : "model"
+        });
         renderAttachments();
       };
       reader.readAsDataURL(file);
@@ -299,7 +319,8 @@
     var box = $("attachments");
     box.innerHTML = "";
     attachments.forEach(function (a, idx) {
-      var chip = div("chip", (a.preview ? '<img src="' + a.preview + '" alt="">' : "🧊") + esc(a.name) + ' <button type="button" title="Убрать">✕</button>');
+      var icon = a.preview ? '<img src="' + a.preview + '" alt="">' : a.kind === "doc" ? "📄" : "🧊";
+      var chip = div("chip", icon + esc(a.name) + ' <button type="button" title="Убрать">✕</button>');
       chip.querySelector("button").onclick = function () { attachments.splice(idx, 1); renderAttachments(); };
       box.appendChild(chip);
     });
@@ -346,7 +367,9 @@
   function loadConfig() {
     api("/api/config").then(function (c) {
       $("mcp-url").textContent = c.mcp_url;
-      $("tool-count").textContent = "Инструментов: " + (c.tools || []).length;
+      $("tool-count").textContent = "Инструментов: " + (c.tools || []).length +
+        " · плагин v" + (c.plugin_version || "?");
+      $("tool-count").title = c.plugin_dir || "";
       if (!c.llm_ready) openSettings();
     });
   }

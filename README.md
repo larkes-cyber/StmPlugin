@@ -9,7 +9,10 @@
 
 1. В STE Slicer откройте **Справка → Показать папку конфигурации**.
 2. Скопируйте папку `AIAssistant` в подпапку `plugins` (`%APPDATA%\steslicer\7.x\plugins\AIAssistant`).
-3. Перезапустите слайсер.
+   Копия плагина должна быть **одна**: если раньше плагин клали в `C:\Program Files\Stereotech STE Slicer …\plugins`,
+   удалите его оттуда.
+3. Перезапустите слайсер. Проверьте версию: в `stderr.log` строка `AIAssistant: plugin v*.*. loaded from …`,
+   в чате (боковая панель) — «плагин v*.*.».
 4. Откройте меню **Расширения → AI Assistant → Открыть чат**. Чат откроется в системном браузере.
 
 Дополнительные пакеты не нужны: используются только стандартная библиотека Python 3.5, numpy и PyQt5
@@ -31,7 +34,11 @@
 ## Как пользоваться
 
 1. Напишите задачу, например «Кронштейн под нагрузку, PETG, без поддержек», и прикрепите STL/OBJ/3MF
-   (кнопкой 📎 или перетаскиванием). Можно приложить фото JPG/PNG.
+   (кнопкой 📎 или перетаскиванием). Можно приложить фото JPG/PNG и описание задачи (ТЗ):
+   - **DOCX, TXT, MD** — текст (с абзацами, списками и таблицами) извлекает плагин стандартной
+     библиотекой Python; TXT читается в UTF-8 или Windows-1251;
+   - старый `.doc` не поддерживается — сохраните его как `.docx`.
+   Документ можно отправить и без текста сообщения: агент выпишет из него требования и будет на них опираться.
 2. В чате видно каждое действие агента: вызовы инструментов с аргументами и результатами,
    изменения настроек «было → стало» с обоснованием, прогресс слайсинга, время печати и расход материала.
 3. Чтобы сохранить результат для сдачи, попросите: «сохрани результат как bracket». Файлы попадут в
@@ -49,11 +56,17 @@ Python-плагин
    ├─ agent/server.py   HTTP-сервер: статика, /api/*, MCP-эндпоинт POST /mcp
    ├─ agent/agent.py    цикл диалога с LLM (Chat Completions + tool calling), фоновый поток
    ├─ agent/mcp.py      MCP-сервер JSON-RPC 2.0: initialize, ping, tools/list, tools/call
-   ├─ agent/tools.py    реестр из 30 инструментов (одни и те же для LLM и MCP)
-   ├─ agent/slicer.py   обёртка над API STE Slicer, все вызовы идут в главном Qt-потоке (callLater)
+   ├─ agent/tools.py    реестр из 31 инструмента (одни и те же для LLM и MCP)
+   ├─ agent/slicer.py   обёртка над API STE Slicer: сцена и настройки — в главном Qt-потоке (callLater),
+   │                    писатели G-code/3MF — в фоновом потоке (они сами используют @call_on_qt_thread)
+   ├─ agent/documents.py извлечение текста ТЗ из DOCX/TXT
    ├─ agent/geometry.py анализ сетки на numpy: нависания, поддержки, контакт со столом, осесимметричность
    └─ agent/llm.py      клиент OpenAI-совместимого API на urllib
 ```
+
+Подробная документация по двум самым сложным модулям:
+- [docs/slicer.md](docs/slicer.md) — `agent/slicer.py`: как плагин работает с API STE Slicer, потоки, координаты, слайсинг, экспорт;
+- [docs/geometry.md](docs/geometry.md) — `agent/geometry.py`: анализ сетки, оценка поддержек, подбор ориентации, распознавание тел вращения.
 
 ### Инструменты
 
@@ -61,7 +74,7 @@ Python-плагин
 |---|---|
 | Настройки и профили | `get_state`, `get_settings`, `search_settings`, `set_settings`, `reset_settings`, `list_quality_profiles`, `set_quality_profile`, `list_materials`, `set_material`, `save_profile`, `get_print_mode`, `set_print_mode` |
 | Модели | `load_model`, `list_objects`, `get_object_dimensions`, `move_object`, `center_object`, `rotate_object`, `scale_object`, `arrange_all`, `delete_object` |
-| Анализ | `analyze_geometry`, `suggest_orientations`, `apply_orientation` |
+| Анализ | `analyze_geometry`, `suggest_orientations`, `apply_orientation`, `get_scene_snapshot` (снимок сцены → vision-LLM) |
 | Слайсинг | `start_slicing`, `get_slicing_status`, `get_slicing_result`, `export_gcode`, `save_project_3mf`, `export_results` |
 
 ### Внешние MCP-клиенты
@@ -83,6 +96,11 @@ Python-плагин
 
 ## Отладка
 
-Логи пишутся в `stderr.log` в папке конфигурации, строки с префиксом `AIAssistant:`.
-Офлайн-разработка без слайсера (папка `dev/` в репозитории): `python dev/test_offline.py` (тесты)
-и `python dev/demo_server.py` (чат с фейковым слайсером и мок-LLM).
+Логи пишутся в `stderr.log` в папке конфигурации, строки с префиксом `AIAssistant:` (уровни d/i/w/e):
+запросы к LLM, каждый шаг агента, вызовы инструментов, изменения настроек, состояния слайсинга, экспорт.
+Если главный поток слайсера не отвечает, в лог пишется его стек — видно, где он застрял.
+
+Офлайн-разработка без слайсера (папка `dev/` рядом с плагином, нужен Python 3 + numpy):
+- `python dev/test_offline.py`, `test_keepalive.py`, `test_documents.py`, `test_source_fixes.py`,
+  `test_mainthread_timeout.py` — тесты;
+- `python dev/demo_server.py` — чат на http://127.0.0.1:8765 с фейковым слайсером и мок-LLM.

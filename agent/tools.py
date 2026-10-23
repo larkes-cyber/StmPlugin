@@ -3,7 +3,7 @@
 import threading
 import time
 
-from .log import log_exception
+from .log import log, log_exception, short
 
 
 class ToolError(Exception):
@@ -65,6 +65,7 @@ class ToolRegistry(object):
                 call_id = "%s_%d" % (source, self._counter)
         if args is None:
             args = {}
+        log("d", "tool → %s [%s, %s] args=%s", name, source, call_id, short(args))
         self._emit("tool_call", call_id=call_id, name=name, args=args, source=source)
         started = time.time()
         tool = self._by_name.get(name)
@@ -89,8 +90,16 @@ class ToolRegistry(object):
                     outcome = {"ok": False, "error": "%s: %s" % (type(e).__name__, e)}
 
         duration = round(time.time() - started, 2)
+        result_for_ui = outcome.get("result")
+        if isinstance(result_for_ui, dict) and "_image" in result_for_ui:
+            # картинка показывается в чате отдельным событием, в карточке инструмента — только пометка
+            result_for_ui = dict(result_for_ui, _image="[изображение]")
+        if outcome["ok"]:
+            log("d", "tool ← %s ok %.2fs result=%s", name, duration, short(result_for_ui, 300))
+        else:
+            log("w", "tool ← %s FAILED %.2fs: %s", name, duration, outcome.get("error"))
         self._emit("tool_result", call_id=call_id, name=name, ok=outcome["ok"],
-                   result=outcome.get("result"), error=outcome.get("error"),
+                   result=result_for_ui, error=outcome.get("error"),
                    duration=duration, source=source)
         return outcome
 
@@ -234,6 +243,11 @@ def build_registry(slicer, events=None):
           slicer.apply_orientation,
           {"object_id": OBJECT_ID, "rank": _int("Номер варианта из suggest_orientations (1 — лучший)"),
            "down": {"type": "array", "items": {"type": "number"}, "description": "Вектор [x,y,z]"}},
+          group="analysis")
+    r.add("get_scene_snapshot",
+          "Сделать снимок сцены (модели на столе, изометрия) и посмотреть на него. Используй, чтобы визуально "
+          "проверить ориентацию и расположение после поворота/расстановки и перед экспортом.",
+          slicer.get_scene_snapshot, {"size": _int("Размер снимка в пикселях, 128–1024 (по умолчанию 512)")},
           group="analysis")
 
     # --- Слайсинг и экспорт ---------------------------------------------------------------

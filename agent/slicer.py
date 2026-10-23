@@ -5,19 +5,24 @@
 (декоратор @on_main или run_on_main). Длительные операции (загрузка, слайсинг) запускаются
 в главном потоке, а ожидание идёт в потоке агента — чтобы интерфейс слайсера не зависал.
 
-Места, которые зависят от конкретной сборки STE Slicer, помечены «ПРОВЕРИТЬ».
+Вызовы сверены с исходниками STE-Slicer-master и Uranium-steslicer.
 """
+import base64
 import math
 import os
 import re
+import threading
 import time
 
 from . import geometry
-from .log import log, log_exception
+from .log import log, log_exception, short
 from .mainthread import on_main, run_on_main
 from .tools import ToolError
 
 PRINT_MODES = ("classic", "cylindrical", "cylindrical_full")
+# Ключ режима в STE Slicer (fdmprinter.def.json, глобальная настройка). В определении есть и другие
+# режимы (discrete, spherical…), но по условиям кейса используются только три выше.
+PRINT_MODE_KEY = "printing_mode"
 MODE_LABELS = {"classic": "3D (classic)", "cylindrical": "5D Spiral (cylindrical)",
                "cylindrical_full": "5D (cylindrical_full)"}
 MODEL_EXTENSIONS = (".stl", ".obj", ".3mf")
@@ -213,24 +218,26 @@ class SlicerAPI(object):
                 stack, scope = self._stack_for(key)
                 old_value = stack.getProperty(key, "value")
                 stack.userChanges.setProperty(key, "value", new_value)
+                actual = stack.getProperty(key, "value")
                 applied.append({"key": key, "label": self._global_stack().getProperty(key, "label"),
-                                "old": _jsonable(old_value), "new": _jsonable(stack.getProperty(key, "value")),
-                                "scope": scope})
+                                "old": _jsonable(old_value), "new": _jsonable(actual), "scope": scope})
+                log("d", "setting %s [%s]: %r -> %r (requested %r)", key, scope, old_value, actual, value)
             except ToolError as e:
+                log("w", "setting %s rejected: %s", key, e)
                 errors.append({"key": key, "error": str(e)})
         return applied, errors
 
     def _validation_errors(self):
-        """Ключи настроек с ошибками валидации (если сборка это поддерживает)."""
-        g = self._global_stack()
-        for name in ("getErrorKeys",):
-            getter = getattr(g, name, None)
+        """Ключи настроек с ошибками валидации (ContainerStack.getErrorKeys) — глобальные и экструдера."""
+        keys = []
+        for stack in (self._global_stack(), self._extruder_stack()):
+            getter = getattr(stack, "getErrorKeys", None) if stack is not None else None
             if callable(getter):
                 try:
-                    return list(getter())
+                    keys.extend(k for k in getter() if k not in keys)
                 except Exception:
-                    pass
-        return []
+                    log_exception("getErrorKeys failed")
+        return keys
 
     # ------------------------------------------------------------------
     # Состояние и настройки
@@ -402,7 +409,7 @@ class SlicerAPI(object):
     @on_main
     def save_profile(self, name):
         qm = _app().getQualityManager()
-        qm.createQualityChanges(name)  # ПРОВЕРИТЬ: сигнатура в STE Slicer
+        qm.createQualityChanges(name)  # QualityManager.createQualityChanges(base_name: str)
         return {"saved": name, "hint": "Профиль можно выбрать через set_quality_profile"}
 
     # --- режим 3D / 5D ------------------------------------------------------
@@ -410,6 +417,9 @@ class SlicerAPI(object):
         if self._mode_key:
             return self._mode_key
         g = self._global_stack()
+        if g.getProperty(PRINT_MODE_KEY, "type") == "enum":
+            self._mode_key = PRINT_MODE_KEY
+            return PRINT_MODE_KEY
         for key in sorted(g.getAllKeys()):
             if g.getProperty(key, "type") != "enum":
                 continue
@@ -502,14 +512,20 @@ class SlicerAPI(object):
         return {"x": g.getProperty("machine_width", "value"), "y": g.getProperty("machine_depth", "value"),
                 "z": g.getProperty("machine_height", "value")}
 
+    def _drop_to_plate(self, node):
+        """Опустить на стол штатной GravityOperation: она учитывает getZOffset узла (как в интерфейсе слайсера)."""
+        from UM.Operations.GravityOperation import GravityOperation
+        GravityOperation(node).push()
+
     def _settle(self, node, center_x, center_z):
-        """Вернуть центр объекта на место и опустить его на стол."""
+        """Вернуть центр объекта на место по X/Y стола и опустить его на стол."""
         from UM.Math.Vector import Vector
         from UM.Operations.TranslateOperation import TranslateOperation
         bb = node.getBoundingBox()
-        delta = Vector(center_x - bb.center.x, -bb.bottom, center_z - bb.center.z)
+        delta = Vector(center_x - bb.center.x, 0.0, center_z - bb.center.z)
         if delta.length() > 1e-4:
             TranslateOperation(node, delta).push()
+        self._drop_to_plate(node)
 
     def _rotate(self, node, scene_axis, angle_rad):
         from UM.Math.Quaternion import Quaternion
@@ -518,7 +534,9 @@ class SlicerAPI(object):
         bb = node.getBoundingBox()
         cx, cz = bb.center.x, bb.center.z
         if abs(angle_rad) > 1e-9:
-            RotateOperation(node, Quaternion.fromAngleAxis(angle_rad, Vector(*scene_axis))).push()
+            # RotateOperation по умолчанию вращает вокруг начала координат — вращаем вокруг центра модели
+            RotateOperation(node, Quaternion.fromAngleAxis(angle_rad, Vector(*scene_axis)),
+                            rotate_around_point=bb.center).push()
         self._settle(node, cx, cz)
         self._suggestions.pop(self._oid(node), None)
 
@@ -539,6 +557,7 @@ class SlicerAPI(object):
         if not path.lower().endswith(MODEL_EXTENSIONS):
             raise ToolError("Поддерживаются только %s" % ", ".join(MODEL_EXTENSIONS))
         before = set(run_on_main(self._node_keys))
+        log("i", "loading model %s (%d objects in scene)", path, len(before))
         run_on_main(self._read_file, path)
         deadline = time.time() + 120
         new_keys, stable_since, last = [], None, None
@@ -554,8 +573,10 @@ class SlicerAPI(object):
                 stable_since = None
             last = new_keys
         if not new_keys:
+            log("w", "model %s did not appear in scene", path)
             raise ToolError("Модель не появилась в сцене за 120 с (проверьте файл и диалоги слайсера)")
         objects = run_on_main(self._infos_for_keys, set(new_keys))
+        log("i", "model loaded: %s", short(objects))
         self._events.emit("scene_changed", action="load", objects=objects)
         return {"loaded": objects, "file": path}
 
@@ -581,7 +602,8 @@ class SlicerAPI(object):
         else:
             tx = cx if x is None else float(x)
             ty = cy if y is None else float(y)
-        TranslateOperation(node, Vector(tx - cx, -bb.bottom, -(ty - cy))).push()
+        TranslateOperation(node, Vector(tx - cx, 0.0, -(ty - cy))).push()
+        self._drop_to_plate(node)
         info = self._node_info(node)
         self._events.emit("scene_changed", action="move", objects=[info])
         return info
@@ -615,7 +637,7 @@ class SlicerAPI(object):
             raise ToolError("Масштаб должен быть больше 0")
         bb = node.getBoundingBox()
         cx, cz = bb.center.x, bb.center.z
-        ScaleOperation(node, Vector(sx, sz, sy), set_scale=True).push()
+        ScaleOperation(node, Vector(sx, sz, sy), set_scale=True, scale_around_point=bb.center).push()
         self._settle(node, cx, cz)
         self._suggestions.pop(self._oid(node), None)
         info = self._node_info(node)
@@ -715,6 +737,32 @@ class SlicerAPI(object):
         return {"object": info, "rotation": {"axis_plate": [round(a, 4) for a in axis], "angle_deg": round(angle, 1)}}
 
     # ------------------------------------------------------------------
+    # Снимок сцены для vision-LLM (steslicer.Snapshot — тот же рендер, что превью в G-code)
+    # ------------------------------------------------------------------
+    def _snapshot_png(self, size):
+        from PyQt5.QtCore import QBuffer
+        from steslicer.Snapshot import Snapshot
+        image = Snapshot.snapshot(width=size, height=size)  # OpenGL — только главный поток
+        if image is None:
+            raise ToolError("В сцене нет видимых моделей для снимка")
+        buffer = QBuffer()
+        buffer.open(QBuffer.ReadWrite)
+        image.save(buffer, "PNG")
+        data = bytes(buffer.data())
+        buffer.close()
+        return data
+
+    def get_scene_snapshot(self, size=512):
+        size = max(128, min(int(size or 512), 1024))
+        png = run_on_main(self._snapshot_png, size)
+        url = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+        log("d", "scene snapshot %dx%d, %d bytes", size, size, len(png))
+        self._events.emit("snapshot", image=url, caption="Снимок сцены")
+        return {"image_attached": True, "size_px": size,
+                "view": "изометрия: камера спереди-слева-сверху, смотрит на центр моделей; стол — внизу",
+                "_image": url}
+
+    # ------------------------------------------------------------------
     # Слайсинг
     # ------------------------------------------------------------------
     def _ensure_backend(self):
@@ -745,6 +793,7 @@ class SlicerAPI(object):
 
     def _on_backend_state(self, state):
         name = self._state_name(state)
+        log("d", "backend state: %s (raw %r, ours %s)", name, state, self._slice["state"])
         if self._slice["state"] == "idle" and name == "pending":
             return
         self._slice["state"] = name
@@ -777,6 +826,8 @@ class SlicerAPI(object):
         self._slice.update(state="processing", progress=0.0, started=time.time(), finished=None, message="")
         self._last_progress_emit = 0.0
         self._events.emit("slice_state", state="processing")
+        log("i", "start slicing via %s.%s", type(backend).__name__,
+            "forceSlice" if hasattr(backend, "forceSlice") else "slice")
         if hasattr(backend, "forceSlice"):
             backend.forceSlice()
         else:
@@ -792,9 +843,12 @@ class SlicerAPI(object):
             time.sleep(0.5)
             state = self._slice["state"]
             if state == "done":
-                return run_on_main(self._result_dict)
+                result = run_on_main(self._result_dict)
+                log("i", "slicing done: %s", short(result))
+                return result
             if state in ("error", "disabled"):
                 errors = run_on_main(self._validation_errors)
+                log("w", "slicing failed: state=%s validation_errors=%s", state, errors)
                 raise ToolError("Слайсинг не выполнен (%s). %s%s" % (
                     state, self._slice.get("message", ""),
                     (" Ошибки в настройках: " + ", ".join(errors)) if errors else ""))
@@ -803,6 +857,7 @@ class SlicerAPI(object):
                 if time.time() - pending_since > 5 and restarts < 2:
                     restarts += 1
                     pending_since = None
+                    log("w", "backend stays pending, restarting slice (%d)", restarts)
                     run_on_main(self._start_slice)
             else:
                 pending_since = None
@@ -857,49 +912,108 @@ class SlicerAPI(object):
             os.makedirs(parent)
         return path
 
-    def _write_gcode(self, path):
-        from UM.Mesh.MeshWriter import MeshWriter
+    def _get_gcode_writer(self):
         from UM.PluginRegistry import PluginRegistry
         writer = PluginRegistry.getInstance().getPluginObject("GCodeWriter")
         if writer is None:
             writer = _app().getMeshFileHandler().getWriterByMimeType("text/x-gcode")
         if writer is None:
             raise ToolError("Не найден GCodeWriter")
-        nodes = [self._scene().getRoot()]
-        with open(path, "w", encoding="utf-8", newline="") as stream:
-            ok = writer.write(stream, nodes, MeshWriter.OutputMode.TextMode)
-        if not ok:
-            info = getattr(writer, "getInformation", lambda: "")()
-            raise ToolError("GCodeWriter не смог записать файл: %s" % info)
+        return writer, [self._scene().getRoot()]
 
-    def _write_project(self, path):
-        from UM.Mesh.MeshWriter import MeshWriter
-        handler = _app().getWorkspaceFileHandler()
-        writer = handler.getWriter("3MFWriter")  # ПРОВЕРИТЬ: id писателя проекта в STE Slicer
+    def _get_project_writer(self):
+        # Писатель проекта зарегистрирован плагином 3MFWriter как workspace_writer
+        writer = _app().getWorkspaceFileHandler().getWriter("3MFWriter")
         if writer is None:
             raise ToolError("Не найден писатель проекта 3MF")
-        nodes = [self._scene().getRoot()]
-        with open(path, "wb") as stream:
-            ok = writer.write(stream, nodes, MeshWriter.OutputMode.BinaryMode)
-        if ok is False:
-            raise ToolError("Не удалось сохранить проект 3MF")
+        return writer, [self._scene().getRoot()]
+
+    def _run_writer(self, get_writer, path, binary, timeout):
+        """Запускает писатель STE Slicer в отдельном фоновом потоке.
+
+        Писатели STE сами переносят работу в главный поток через @call_on_qt_thread (3MF целиком,
+        GCodeWriter — снимок-превью). Этот декоратор всегда делает callLater и ждёт результата,
+        поэтому вызов писателя ИЗ главного потока зависает навсегда. Если внутри писателя случится
+        исключение, декоратор тоже никогда не вернётся — поэтому отдельный поток и таймаут.
+        """
+        from UM.Mesh.MeshWriter import MeshWriter
+        if threading.current_thread() is threading.main_thread():
+            raise ToolError("Экспорт нельзя запускать из главного потока слайсера")
+        writer, nodes = run_on_main(get_writer)
+        mode = MeshWriter.OutputMode.BinaryMode if binary else MeshWriter.OutputMode.TextMode
+        log("i", "writing %s with %s.%s", path, type(writer).__module__, type(writer).__name__)
+        box = {}
+
+        def work():
+            try:
+                if binary:
+                    with open(path, "wb") as stream:
+                        box["ok"] = writer.write(stream, nodes, mode)
+                else:
+                    with open(path, "w", encoding="utf-8", newline="") as stream:
+                        box["ok"] = writer.write(stream, nodes, mode)
+            except Exception as e:
+                log_exception("writer %s failed" % type(writer).__name__)
+                box["error"] = e
+
+        worker = threading.Thread(target=work, name="AIAssistantWriter")
+        worker.daemon = True
+        started = time.time()
+        worker.start()
+        worker.join(timeout)
+        if worker.is_alive():
+            raise ToolError("%s не завершился за %d с — проверьте, не открыт ли в слайсере диалог"
+                            % (type(writer).__name__, timeout))
+        if "error" in box:
+            raise ToolError("%s: %s" % (type(writer).__name__, box["error"]))
+        log("d", "%s returned %r in %.2fs", type(writer).__name__, box.get("ok"), time.time() - started)
+        if box.get("ok") is False:
+            info = getattr(writer, "getInformation", lambda: "")()
+            raise ToolError("%s не смог записать файл%s" % (type(writer).__name__, (": " + info) if info else ""))
+
+    def _write_atomic(self, get_writer, path, binary, timeout):
+        """Пишем во временный файл и переименовываем только при успехе — пустых файлов не остаётся."""
+        tmp = path + ".part"
+        try:
+            self._run_writer(get_writer, tmp, binary, timeout)
+        except Exception:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass  # при таймауте файл ещё может быть открыт писателем
+            raise
+        if os.path.getsize(tmp) == 0:
+            os.remove(tmp)
+            raise ToolError("Писатель создал пустой файл")
+        if os.path.exists(path):
+            os.remove(path)
+        os.rename(tmp, path)
 
     def export_gcode(self, path=None, model_name=None):
         if self._slice["state"] != "done":
             raise ToolError("Сначала выполните слайсинг (start_slicing)")
         path = self._output_path(path, model_name, "result.gcode")
-        run_on_main(self._write_gcode, path)
+        self._write_atomic(self._get_gcode_writer, path, False, 120)
         check = check_gcode(path)
+        log("i" if check["valid"] else "w", "G-code check %s: %s", path, short(check))
         self._events.emit("file_saved", kind="gcode", path=path, check=check)
         return {"path": path, "check": check}
 
     def save_project_3mf(self, path=None, model_name=None):
         path = self._output_path(path, model_name, "project.3mf")
-        run_on_main(self._write_project, path)
+        self._write_atomic(self._get_project_writer, path, True, 120)
         self._events.emit("file_saved", kind="3mf", path=path)
         return {"path": path, "size_kb": round(os.path.getsize(path) / 1024.0, 1)}
 
     def export_results(self, model_name):
-        project = self.save_project_3mf(model_name=model_name)
-        gcode = self.export_gcode(model_name=model_name)
-        return {"folder": os.path.dirname(project["path"]), "project": project, "gcode": gcode}
+        """G-code — первым и независимо: даже если проект 3MF не запишется, G-code останется."""
+        result = {"folder": os.path.dirname(self._output_path(None, model_name, "x")), "errors": []}
+        for key, func in (("gcode", self.export_gcode), ("project", self.save_project_3mf)):
+            try:
+                result[key] = func(model_name=model_name)
+            except Exception as e:
+                log("w", "export_results: %s failed: %s", key, e)
+                result["errors"].append("%s: %s" % (key, e))
+        if "gcode" not in result and "project" not in result:
+            raise ToolError("Не удалось сохранить ни G-code, ни 3MF: %s" % "; ".join(result["errors"]))
+        return result

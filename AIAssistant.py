@@ -15,6 +15,8 @@ class AIAssistant(Extension):
         self.addMenuItem("Открыть чат", self.showChat)
         self.addMenuItem("Папка результатов", self.openResultsFolder)
         self._ctx = None
+        from .agent.version import PLUGIN_DIR, plugin_version
+        Logger.log("i", "AIAssistant: plugin v%s loaded from %s", plugin_version(), PLUGIN_DIR)
         # MCP-сервер должен быть доступен сразу после старта слайсера, а не только после открытия чата
         try:
             Application.getInstance().engineCreatedSignal.connect(self._onEngineCreated)
@@ -39,6 +41,7 @@ class AIAssistant(Extension):
     def showChat(self):
         try:
             ctx = self._ensureStarted()
+            Logger.log("i", "AIAssistant: opening chat %s/", ctx.url)
             webbrowser.open(ctx.url + "/")
         except Exception:
             Logger.logException("e", "AIAssistant: failed to open chat")

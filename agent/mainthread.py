@@ -42,10 +42,26 @@ def run_on_main(func, *args, **kwargs):
 
     app.callLater(wrapper)
     if not done.wait(timeout):
-        raise MainThreadTimeout("Главный поток слайсера не ответил за %d с" % timeout)
+        where = _main_thread_stack()
+        from .log import log
+        log("e", "main thread timeout (%ds) in %s. Main thread is stuck here:\n%s",
+            timeout, getattr(func, "__name__", func), where)
+        last = [line for line in where.strip().splitlines() if line.strip().startswith("File")]
+        raise MainThreadTimeout("Главный поток слайсера не ответил за %d с (%s). Возможно, в слайсере открыт "
+                                "диалог. Полный стек — в stderr.log"
+                                % (timeout, last[-1].strip() if last else "место неизвестно"))
     if "error" in box:
         raise box["error"]
     return box.get("result")
+
+
+def _main_thread_stack():
+    """Стек главного потока — показывает, где именно он завис."""
+    import sys
+    frame = sys._current_frames().get(threading.main_thread().ident)
+    if frame is None:
+        return "(стек недоступен)"
+    return "".join(traceback.format_stack(frame))
 
 
 def on_main(func):

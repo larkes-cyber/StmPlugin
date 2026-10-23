@@ -13,7 +13,9 @@ from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .agent import AgentBusy
-from .log import log, log_exception
+from .documents import DOC_EXT, DocumentError, extract_text
+from .log import log, log_exception, short
+from .version import PLUGIN_DIR, plugin_version
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
 UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "ste_ai_uploads")
@@ -45,6 +47,15 @@ def make_handler(ctx):
         def log_message(self, fmt, *args):
             pass
 
+        def log_request(self, code="-", size="-"):
+            # long-polling событий и статика идут постоянно — не засоряем ими лог
+            path = urlparse(self.path).path
+            if path.startswith("/api/") and path != "/api/events" or path == "/mcp":
+                log("d", "HTTP %s %s -> %s", self.command, path, code)
+
+        def log_error(self, fmt, *args):
+            log("w", "HTTP %s: %s", self.address_string(), fmt % args)
+
         # --- утилиты ---------------------------------------------------------
         def _host_ok(self):
             host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
@@ -69,14 +80,22 @@ def make_handler(ctx):
                 self.wfile.write(body)
 
         def _json(self, obj, status=200):
+            if status >= 400:
+                log("w", "%s %s -> %d: %s", self.command, self.path, status, obj.get("error") if isinstance(obj, dict) else obj)
             body = json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8")
             self._send(status, body, "application/json; charset=utf-8")
 
-        def _read_body(self):
+        def _consume_body(self):
+            """Всегда дочитываем тело запроса целиком: иначе остаток попадёт в следующий
+            запрос того же keep-alive соединения и сервер ответит HTML-ошибкой."""
             length = int(self.headers.get("Content-Length") or 0)
             if length > MAX_BODY:
+                self.close_connection = True
                 raise ValueError("Слишком большой запрос")
-            return self.rfile.read(length).decode("utf-8") if length else ""
+            self._body = self.rfile.read(length).decode("utf-8") if length else ""
+
+        def _read_body(self):
+            return getattr(self, "_body", "")
 
         def _read_json(self):
             raw = self._read_body()
@@ -100,6 +119,8 @@ def make_handler(ctx):
                     data["llm_ready"] = ctx.config.llm_ready()
                     data["mcp_url"] = ctx.url + "/mcp"
                     data["tools"] = ctx.registry.names()
+                    data["plugin_version"] = plugin_version()
+                    data["plugin_dir"] = PLUGIN_DIR
                     return self._json(data)
                 if path == "/api/state":
                     try:
@@ -127,11 +148,16 @@ def make_handler(ctx):
 
         # --- POST ------------------------------------------------------------
         def do_POST(self):
-            if not self._host_ok():
-                return self._json({"error": "forbidden"}, 403)
             path = urlparse(self.path).path
             try:
+                self._consume_body()
+            except ValueError as e:
+                return self._json({"error": str(e)}, 413)
+            if not self._host_ok():
+                return self._json({"error": "forbidden"}, 403)
+            try:
                 if path == "/mcp":
+                    log("d", "MCP request: %s", short(self._read_body(), 300))
                     response = ctx.mcp.handle_raw(self._read_body())
                     if response is None:
                         return self._send(202, b"", "application/json")
@@ -145,7 +171,11 @@ def make_handler(ctx):
                     ctx.agent.reset()
                     return self._json({"ok": True})
                 if path == "/api/config":
-                    ctx.config.update(self._read_json())
+                    data = self._read_json()
+                    log("i", "config updated: %s", ", ".join(
+                        "%s=%s" % (k, "***" if k == "api_key" else v) for k, v in sorted(data.items())
+                        if k != "api_key" or v))
+                    ctx.config.update(data)
                     data = ctx.config.public()
                     data["llm_ready"] = ctx.config.llm_ready()
                     return self._json(data)
@@ -168,12 +198,20 @@ def make_handler(ctx):
                 return self._json({"error": "Пустое сообщение"}, 400)
             if not ctx.config.llm_ready():
                 return self._json({"error": "Укажите URL, ключ и модель LLM в настройках"}, 400)
-            images, files = [], []
+            images, files, documents = [], [], []
             if not os.path.isdir(UPLOAD_DIR):
                 os.makedirs(UPLOAD_DIR)
             for item in attachments:
                 name = _safe_filename(item.get("name"))
                 ext = os.path.splitext(name)[1].lower()
+                if ext in DOC_EXT:
+                    try:
+                        doc = extract_text(name, base64.b64decode(item.get("data") or ""))
+                    except DocumentError as e:
+                        return self._json({"error": str(e)}, 400)
+                    log("d", "document %s: %d chars%s", name, doc["chars"], " (truncated)" if doc["truncated"] else "")
+                    documents.append(doc)
+                    continue
                 raw = base64.b64decode(item.get("data") or "")
                 if ext in IMAGE_EXT:
                     mime = "image/png" if ext == ".png" else "image/jpeg"
@@ -186,10 +224,11 @@ def make_handler(ctx):
                     with open(path, "wb") as f:
                         f.write(raw)
                     files.append({"name": name, "path": path})
+                    log("d", "attachment saved: %s (%d bytes)", path, len(raw))
                 else:
                     return self._json({"error": "Неподдерживаемый тип файла: %s" % name}, 400)
             try:
-                ctx.agent.submit(text, images, files)
+                ctx.agent.submit(text, images, files, documents)
             except AgentBusy as e:
                 return self._json({"error": str(e)}, 409)
             return self._json({"ok": True})
@@ -207,4 +246,5 @@ def start_server(ctx, port):
     thread = threading.Thread(target=server.serve_forever, name="AIAssistantHTTP")
     thread.daemon = True
     thread.start()
+    log("i", "HTTP server listening on 127.0.0.1:%d (web dir: %s)", server.server_port, WEB_DIR)
     return server

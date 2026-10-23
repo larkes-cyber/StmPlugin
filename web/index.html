@@ -23,7 +23,7 @@
         <div id="messages" class="messages">
           <div id="welcome" class="welcome">
             <h2>Опишите задачу печати</h2>
-            <p>Прикрепите модель (STL/OBJ/3MF) и, если нужно, фото. Ассистент выберет режим 3D/5D, профиль,
+            <p>Прикрепите модель (STL/OBJ/3MF), при необходимости фото и описание задачи (DOCX/TXT). Ассистент выберет режим 3D/5D, профиль,
               материал, ориентацию и настройки, нарежет модель и объяснит решения.</p>
             <div class="examples">
               <button class="example">Кронштейн под нагрузку, PETG, без поддержек</button>
@@ -43,14 +43,14 @@
       <form id="composer" class="composer">
         <div id="attachments" class="attachments"></div>
         <div class="row">
-          <label class="attach" title="Прикрепить STL/OBJ/3MF/JPG/PNG">
-            <input type="file" id="file-input" multiple accept=".stl,.obj,.3mf,.jpg,.jpeg,.png" hidden>📎
+          <label class="attach" title="Прикрепить модель (STL/OBJ/3MF), фото (JPG/PNG) или ТЗ (DOCX/TXT)">
+            <input type="file" id="file-input" multiple accept=".stl,.obj,.3mf,.jpg,.jpeg,.png,.docx,.txt,.md" hidden>📎
           </label>
           <textarea id="input" rows="2" placeholder="Например: «Кронштейн под нагрузку, PETG, без поддержек»"></textarea>
           <button type="submit" id="btn-send" class="primary">Отправить</button>
           <button type="button" id="btn-stop" class="danger hidden">■ Стоп</button>
         </div>
-        <div class="hint">Enter — отправить · Shift+Enter — новая строка · файлы можно перетащить в окно</div>
+        <div class="hint">Enter — отправить · Shift+Enter — новая строка · перетащите модель, фото или ТЗ (DOCX/TXT) в окно</div>
       </form>
     </main>
 

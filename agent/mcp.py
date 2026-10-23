@@ -78,11 +78,15 @@ class MCPServer(object):
                 else:
                     outcome = self._registry.call(name, params.get("arguments") or {}, source="mcp")
                     payload = outcome.get("result") if outcome.get("ok") else {"error": outcome.get("error")}
-                    response = _result(msg_id, {
-                        "content": [{"type": "text",
-                                     "text": json.dumps(payload, ensure_ascii=False, indent=1, default=str)}],
-                        "isError": not outcome.get("ok"),
-                    })
+                    content = []
+                    if isinstance(payload, dict) and str(payload.get("_image", "")).startswith("data:"):
+                        header, data = payload["_image"].split(",", 1)
+                        content.append({"type": "image", "data": data,
+                                        "mimeType": header[5:].split(";", 1)[0]})
+                        payload = dict((k, v) for k, v in payload.items() if k != "_image")
+                    content.insert(0, {"type": "text",
+                                       "text": json.dumps(payload, ensure_ascii=False, indent=1, default=str)})
+                    response = _result(msg_id, {"content": content, "isError": not outcome.get("ok")})
             else:
                 response = _error(msg_id, METHOD_NOT_FOUND, "Method not found: %s" % method)
         except Exception as e:

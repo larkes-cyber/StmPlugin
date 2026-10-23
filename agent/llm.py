@@ -6,6 +6,8 @@ import time
 import urllib.error
 import urllib.request
 
+from .log import log
+
 
 class LLMError(Exception):
     pass
@@ -45,18 +47,30 @@ class LLMClient(object):
             kwargs["context"] = self._ssl_context()
         last_error = None
         for attempt in range(3):
+            started = time.time()
+            log("d", "LLM request %s (attempt %d, %d bytes)", url, attempt + 1, len(data or b""))
             try:
                 response = urllib.request.urlopen(request, **kwargs)
-                return json.loads(response.read().decode("utf-8"))
+                raw = response.read().decode("utf-8")
+                log("d", "LLM response HTTP %s in %.2fs (%d chars)", response.status, time.time() - started, len(raw))
+                try:
+                    return json.loads(raw)
+                except ValueError:
+                    # частая причина — неверный Base URL: вместо API отвечает веб-страница
+                    raise LLMError("LLM вернула не JSON (проверьте Base URL, обычно он заканчивается на /v1): %s"
+                                   % raw[:200].replace("\n", " "))
             except urllib.error.HTTPError as e:
                 body = e.read().decode("utf-8", "replace")[:800]
                 last_error = LLMError("LLM вернула HTTP %d: %s" % (e.code, body))
+                log("w", "LLM HTTP %d from %s: %s", e.code, url, body[:300])
                 if e.code not in (429, 500, 502, 503, 504):
                     raise last_error
             except urllib.error.URLError as e:
                 last_error = LLMError("Нет соединения с LLM (%s): %s" % (url, e.reason))
-            except (ValueError, OSError) as e:
+                log("w", "LLM connection error %s: %s", url, e.reason)
+            except OSError as e:
                 last_error = LLMError("Ошибка обращения к LLM: %s" % e)
+                log("w", "LLM error %s: %s", url, e)
             time.sleep(1.5 * (attempt + 1))
         raise last_error
 

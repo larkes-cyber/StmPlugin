@@ -1,25 +1,31 @@
 import os
+
 from UM.Resources import Resources
 
 from .ai import LLMClient, PromptManager, ReviewGate, build_registry
 from .chats import ChatManager
-from .core import EventBus, config as default_config
+from .core import EventBus
+from .core import config as default_config
 from .runner import AgentRunner
 from .server import start_server
 from .slicer import SlicerAPI
 
 
 def _default_prompt_path():
-    return os.path.join(Resources.getDataStoragePath(), "ai_assistant_system_prompt.txt")
+    return os.path.join(
+        Resources.getDataStoragePath(), "ai_assistant_system_prompt.txt"
+    )
 
 
 class Context(object):
-    """
-    Главный узел сборки зависимостей (IoC контейнер) плагина.
-    Инициализирует шину, настройки, слайсер, инструменты, сервер и воркер агента.
-    """
-
-    def __init__(self, config=None, slicer_factory=SlicerAPI, llm=None, prompt_path=None, chats_dir=None):
+    def __init__(
+        self,
+        config=None,
+        slicer_factory=SlicerAPI,
+        llm=None,
+        prompt_path=None,
+        chats_dir=None,
+    ):
         self.config = config or default_config
         prompt_path = prompt_path or _default_prompt_path()
 
@@ -34,7 +40,14 @@ class Context(object):
         self.review = ReviewGate(self.events, self.slicer)
         self.registry = build_registry(self.slicer, self.events, self.review)
         self.llm = llm or LLMClient(self.config)
-        self.agent = AgentRunner(self.config, self.registry, self.events, self.llm, self.system_prompt, self.chats)
+        self.agent = AgentRunner(
+            self.config,
+            self.registry,
+            self.events,
+            self.llm,
+            self.system_prompt,
+            self.chats,
+        )
         self.server = None
 
     def start(self):

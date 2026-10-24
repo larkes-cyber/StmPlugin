@@ -5,17 +5,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .ai import LLMError
 from .chats import ChatManager, drop_unanswered_tool_calls, strip_images
-from .core import Logger
+from .core import Logger, config
 
 MAX_STEPS = 40
 MAX_TOOL_RESULT_CHARS = 12000
-IMAGE_PLACEHOLDER = "[снимок приложен следующим сообщением]"
-
-
-class AgentBusy(Exception):
-    """Исключение, если агент уже занят выполнением задачи в данном чате."""
-
-    pass
 
 
 def _image_part(image_url):
@@ -24,50 +17,66 @@ def _image_part(image_url):
 
 class AgentRunner(object):
     """
-    Воркер диалогового цикла ReAct (Reasoning + Acting).
-    Поддерживает пул воркеров (Worker Pool) для масштабирования параллельных чатов.
+    Многопоточный раннер диалогов на базе Worker Pool (ThreadPoolExecutor).
+    Обеспечивает параллельную обработку сообщений в разных чатах без взаимных блокировок.
     """
 
-    def __init__(self, config, registry, events, llm, system_prompt, chats=None, max_workers=2):
-        self._config = config
+    def __init__(self, config_obj, registry, events, llm, system_prompt, chats=None):
+        self._config = config_obj or config
         self._system_prompt = system_prompt
         self._registry = registry
         self._events = events
         self._llm = llm
         self._chats = chats if chats is not None else ChatManager(events)
-        self._lock = threading.Lock()
-        self._busy = False
-        self._cancel = False
 
-        # Заготовка под Worker Pool:
+        self._lock = threading.Lock()
+        self._active_chats = set()
+        self._cancel_flags = set()
+
+        max_workers = int(self._config.get("max_workers", 4))
         self._pool = ThreadPoolExecutor(max_workers=max_workers)
 
     @property
     def busy(self):
-        return self._busy
+        with self._lock:
+            return bool(self._active_chats)
 
-    def stop(self):
-        Logger.log("i", "Запрошена остановка агента (busy=%s)", self._busy)
-        if self._busy:
-            self._cancel = True
+    def is_chat_busy(self, chat_id):
+        with self._lock:
+            return chat_id in self._active_chats
+
+    def stop(self, chat_id=None):
+        """Останавливает выполнение конкретного чата или всех активных диалогов."""
+        with self._lock:
+            if chat_id:
+                Logger.log("i", "Запрошена остановка чата %s", chat_id)
+                self._cancel_flags.add(chat_id)
+            else:
+                Logger.log("i", "Запрошена остановка всех активных чатов: %s", self._active_chats)
+                self._cancel_flags.update(self._active_chats)
 
     def submit(self, text, images=None, files=None, documents=None, chat_id=None):
-        """Передает задачу в Worker Pool на исполнение."""
+        """Отправляет задачу на исполнение воркеру из пула потоков."""
         images = images or []
         files = files or []
         documents = documents or []
         attachments = [{"kind": "image"} for _ in images] + files + documents
 
         with self._lock:
-            if self._busy:
-                raise AgentBusy(self._busy_message())
-            chat = self._chats.begin_run(chat_id, self._title_hint(text, images, files, documents))
-            self._busy = True
-            self._cancel = False
+            target_chat = self._chats.resolve(chat_id)
+            cid = target_chat.id
+
+            if cid in self._active_chats:
+                title = self._chats.title(cid) or "диалог"
+                raise ValueError("В чате «%s» уже обрабатывается запрос — дождитесь ответа или остановите его" % title)
+
+            chat = self._chats.begin_run(cid, self._title_hint(text, images, files, documents))
+            self._active_chats.add(chat.id)
+            self._cancel_flags.discard(chat.id)
 
         Logger.log(
             "i",
-            "Сообщение пользователя [чат %s, сообщений ранее: %d]: %s | файлы=%s доки=%s фото=%d",
+            "Запуск воркера [чат %s, история: %d]: %s | файлы=%s доки=%s фото=%d",
             chat.id,
             len(chat.messages),
             text,
@@ -77,11 +86,16 @@ class AgentRunner(object):
         )
         self._events.emit("user", {"text": text, "attachments": attachments}, chat_id=chat.id)
 
-        # Отправляем задачу воркеру в пул потоков:
-        future = self._pool.submit(self._run, chat, text, images, files, documents)
+        # Отправляем задачу в Worker Pool:
+        future = self._pool.submit(self._run_task, chat, text, images, files, documents)
         return future
 
-    def _run(self, chat, text, images, files, documents):
+    def _is_cancelled(self, chat_id):
+        with self._lock:
+            return chat_id in self._cancel_flags
+
+    def _run_task(self, chat, text, images, files, documents):
+        chat_id = chat.id
         started_at = time.time()
         steps_done = 0
         messages = list(chat.messages)
@@ -94,13 +108,13 @@ class AgentRunner(object):
             tools = self._registry.openai_tools()
             prompt_kind = "custom" if self._system_prompt.is_custom() else "default"
             system_msg = {"role": "system", "content": self._system_prompt.text()}
-            Logger.log("i", "Системный промпт (%s) для чата %s", prompt_kind, chat.id)
+            Logger.log("i", "Воркер взял задачу для чата %s (промпт: %s)", chat_id, prompt_kind)
 
             step = 0
             while step < MAX_STEPS:
-                if self._cancel:
-                    Logger.log("i", "Выполнение прервано на шаге %d", step)
-                    self._events.emit("status", {"state": "idle"}, chat_id=chat.id)
+                if self._is_cancelled(chat_id):
+                    Logger.log("i", "Чат %s отменен на шаге %d", chat_id, step)
+                    self._events.emit("status", {"state": "idle"}, chat_id=chat_id)
                     break
 
                 step += 1
@@ -109,14 +123,14 @@ class AgentRunner(object):
                 dialog = [system_msg] + messages
                 drop_unanswered_tool_calls(dialog)
 
-                self._events.emit("status", {"state": "thinking"}, chat_id=chat.id)
+                self._events.emit("status", {"state": "thinking"}, chat_id=chat_id)
                 msg_started_at = time.time()
 
                 try:
                     assistant_msg, usage = self._llm.chat(dialog, tools=tools)
                 except LLMError as err:
-                    Logger.log("e", "Сбой LLM: %s", err)
-                    self._events.emit("error", {"message": str(err)}, chat_id=chat.id)
+                    Logger.log("e", "Сбой LLM в чате %s: %s", chat_id, err)
+                    self._events.emit("error", {"message": str(err)}, chat_id=chat_id)
                     break
 
                 content = assistant_msg.get("content")
@@ -124,7 +138,8 @@ class AgentRunner(object):
 
                 Logger.log(
                     "d",
-                    "Шаг %d: LLM %.2fs, токены in/out=%s/%s, тулов=%d",
+                    "Чат %s, шаг %d: LLM %.2fs, токены in/out=%s/%s, тулов=%d",
+                    chat_id,
                     step,
                     time.time() - msg_started_at,
                     usage.get("prompt_tokens"),
@@ -137,15 +152,13 @@ class AgentRunner(object):
 
                 if content:
                     is_final = not tool_calls
-                    self._events.emit("assistant", {"text": content, "final": is_final}, chat_id=chat.id)
+                    self._events.emit("assistant", {"text": content, "final": is_final}, chat_id=chat_id)
 
                 if not tool_calls:
-                    # Финальный ответ модели получен
                     break
 
-                # Выполняем запрошенные инструменты
                 for call in tool_calls:
-                    if self._cancel:
+                    if self._is_cancelled(chat_id):
                         break
                     call_id = call.get("id")
                     func = call.get("function") or {}
@@ -156,9 +169,9 @@ class AgentRunner(object):
                     except Exception:
                         args = {}
 
-                    self._events.emit("tool_call", {"id": call_id, "name": name, "args": args}, chat_id=chat.id)
+                    self._events.emit("tool_call", {"id": call_id, "name": name, "args": args}, chat_id=chat_id)
                     tool_outcome = self._registry.call(name, args, source="agent")
-                    self._events.emit("tool_result", {"id": call_id, "name": name, "result": tool_outcome}, chat_id=chat.id)
+                    self._events.emit("tool_result", {"id": call_id, "name": name, "result": tool_outcome}, chat_id=chat_id)
 
                     result_text = json.dumps(tool_outcome, ensure_ascii=False, default=str)
                     if len(result_text) > MAX_TOOL_RESULT_CHARS:
@@ -170,21 +183,23 @@ class AgentRunner(object):
                 self._chats.checkpoint(chat)
 
         except Exception as e:
-            Logger.logException("Сбой в работе воркера диалога")
-            self._events.emit("error", {"message": "Внутренняя ошибка ассистента: %s" % e}, chat_id=chat.id)
+            Logger.logException("Сбой в воркере диалога чата %s", chat_id)
+            self._events.emit("error", {"message": "Внутренняя ошибка ассистента: %s" % e}, chat_id=chat_id)
         finally:
             elapsed = time.time() - started_at
-            Logger.log("i", "Диалог в чате %s завершён: %d шагов, %.1fс", chat.id, steps_done, elapsed)
+            Logger.log("i", "Воркер завершил чат %s: %d шагов, %.1fс", chat_id, steps_done, elapsed)
             strip_images(messages)
             chat.messages = messages
             try:
                 self._chats.end_run(chat)
             except Exception:
-                Logger.logException("Не удалось завершить сессию чата %s", chat.id)
+                Logger.logException("Не удалось сохранить сессию чата %s", chat_id)
 
             with self._lock:
-                self._busy = False
-            self._events.emit("status", {"state": "idle"}, chat_id=chat.id)
+                self._active_chats.discard(chat_id)
+                self._cancel_flags.discard(chat_id)
+
+            self._events.emit("status", {"state": "idle"}, chat_id=chat_id)
 
     def _user_message(self, text, images, files, documents):
         parts = []
@@ -209,11 +224,6 @@ class AgentRunner(object):
             content_parts.append(_image_part(img_url))
         return {"role": "user", "content": content_parts}
 
-    def _busy_message(self):
-        running = getattr(self._chats, "running_id", None)
-        title = self._chats.title(running) if running else ""
-        return "Ассистент ещё выполняет задачу в чате «%s» — дождитесь ответа или остановите его" % (title or "диалог")
-
     def _title_hint(self, text, images, files, documents):
         if text:
             return text
@@ -221,7 +231,3 @@ class AgentRunner(object):
             if item.get("name"):
                 return item["name"]
         return "Изображение" if images else ""
-
-
-# Алиас для обратной совместимости
-Agent = AgentRunner

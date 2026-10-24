@@ -22,6 +22,7 @@ DEFAULT_SETTINGS = {
     "slice_timeout": 300.0,
     "write_timeout": 60.0,
     "load_timeout": 30.0,
+    "max_workers": 4,
     "chats_dir_name": "ai_assistant_chats",
     "chats_save_delay": 2.0,
     "chats_max_events": 3000,

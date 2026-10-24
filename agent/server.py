@@ -12,8 +12,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .agent import AgentBusy
 from .documents import DOC_EXT, extract_text
-from agent.core import Logger
-from agent.core import config
+from .core import Logger
+from .core import config
 
 WEB_DIR = os.path.join(config.plugin_dir, "web")
 UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "ste_ai_uploads")

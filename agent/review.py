@@ -1,6 +1,6 @@
 import threading
 
-from agent.core import Logger
+from .core import Logger
 from .tools import ToolError
 
 REVIEW_TIMEOUT = 30 * 60

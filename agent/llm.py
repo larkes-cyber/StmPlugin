@@ -4,7 +4,7 @@ import time
 import urllib.error
 import urllib.request
 
-from agent.core import Logger
+from .core import Logger
 
 CHAT_PATH = "/chat/completions"
 REQUEST_TIMEOUT = 180

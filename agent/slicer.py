@@ -23,7 +23,7 @@ from steslicer.SteSlicerApplication import SteSlicerApplication
 from steslicer.Snapshot import Snapshot
 
 from . import geometry
-from agent.core import Logger
+from .core import Logger
 from .mainthread import on_main, run_on_main
 from .tools import ToolError
 

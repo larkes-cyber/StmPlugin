@@ -6,7 +6,7 @@ from PyQt5.QtGui import QDesktopServices
 from UM.Application import Application
 from UM.Extension import Extension
 
-from agent.core import Logger, config
+from .agent.core import Logger, config
 from .agent.context import Context
 
 

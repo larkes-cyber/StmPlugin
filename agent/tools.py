@@ -1,7 +1,7 @@
 import threading
 import time
 
-from .log import log, log_exception, shorten
+from agent.core import Logger
 
 
 class ToolError(Exception):
@@ -77,7 +77,7 @@ class ToolRegistry(object):
         call_id = self._next_call_id(source, call_id)
         arguments = args if args is not None else {}
 
-        log("d", "tool → %s [%s, %s] args=%s", name, source, call_id, shorten(arguments))
+        Logger.log("d", "tool → %s [%s, %s] args=%s", name, source, call_id, arguments)
         self._emit("tool_call", call_id=call_id, name=name, args=arguments, source=source)
 
         started_at = time.time()
@@ -86,9 +86,9 @@ class ToolRegistry(object):
 
         result_for_chat = _hide_image(outcome.get("result"))
         if outcome["ok"]:
-            log("d", "tool ← %s ok %.2fs result=%s", name, duration, shorten(result_for_chat, 300))
+            Logger.log("d", "tool ← %s ok %.2fs result=%s", name, duration, result_for_chat)
         else:
-            log("w", "tool ← %s FAILED %.2fs: %s", name, duration, outcome.get("error"))
+            Logger.log("w", "tool ← %s FAILED %.2fs: %s", name, duration, outcome.get("error"))
 
         self._emit(
             "tool_result",
@@ -127,7 +127,7 @@ class ToolRegistry(object):
         except ToolError as error:
             return {"ok": False, "error": str(error)}
         except Exception as error:
-            log_exception("Tool %s failed" % name)
+            Logger.logException("Tool %s failed" % name)
             return {"ok": False, "error": "%s: %s" % (type(error).__name__, error)}
 
     def _emit(self, event_type, **data):

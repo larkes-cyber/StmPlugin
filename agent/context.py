@@ -1,9 +1,9 @@
 import os
 
 from UM.Resources import Resources
+from agent.core import config as default_config
 
 from .agent import Agent
-from .config import Config
 from .events import EventBus
 from .llm import LLMClient
 from .mcp import MCPServer
@@ -20,7 +20,7 @@ def _default_prompt_path():
 
 class Context(object):
     def __init__(self, config=None, slicer_factory=SlicerAPI, llm=None, prompt_path=None):
-        self.config = config or Config()
+        self.config = config or default_config
         self.events = EventBus()
         self.system_prompt = SystemPromptStore(prompt_path or _default_prompt_path())
         self.slicer = slicer_factory(self.events, self.config)
@@ -33,7 +33,8 @@ class Context(object):
 
     def start(self):
         if self.server is None:
-            self.server = start_server(self, self.config.get("port"))
+            host, port = self.config.get_server_binding()
+            self.server = start_server(self, host=host, port=port)
         return self
 
     def stop(self):

@@ -1,6 +1,6 @@
 import json
 
-from .log import log_exception
+from agent.core import Logger
 
 SUPPORTED_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 SERVER_INFO = {"name": "ste-slicer-ai-assistant", "version": "1.0.0"}
@@ -85,7 +85,7 @@ class MCPServer(object):
         try:
             response = self._dispatch(message_id, method, params)
         except Exception as error:
-            log_exception("MCP request failed")
+            Logger.logException("MCP request failed")
             response = _error_response(message_id, INTERNAL_ERROR, str(error))
 
         if is_notification:

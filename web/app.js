@@ -48,7 +48,7 @@
   const ALLOWED_EXTENSIONS = ["stl", "obj", "3mf", "jpg", "jpeg", "png", "docx", "txt", "md"];
   const DOCUMENT_EXTENSIONS = ["docx", "txt", "md"];
   const IMAGE_EXTENSION_PATTERN = /^(jpg|jpeg|png)$/;
-  const HTML2CANVAS_URL = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+  const HTML2CANVAS_URL = "/vendor/html2canvas.min.js";
 
   const element = (id) => document.getElementById(id);
 

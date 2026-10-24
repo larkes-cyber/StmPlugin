@@ -1,19 +1,22 @@
-# -*- coding: utf-8 -*-
-"""Агент: цикл диалога с LLM и вызова инструментов. Работает в отдельном потоке."""
 import json
 import threading
 import time
 
 from .llm import LLMError
-from .log import log, log_exception, short
+from .log import log, log_exception, shorten
 from .prompts import SYSTEM_PROMPT
 
 MAX_STEPS = 40
 MAX_TOOL_RESULT_CHARS = 12000
+IMAGE_PLACEHOLDER = "[снимок приложен следующим сообщением]"
 
 
 class AgentBusy(Exception):
     pass
+
+
+def _image_part(image_url):
+    return {"type": "image_url", "image_url": {"url": image_url}}
 
 
 class Agent(object):
@@ -44,145 +47,233 @@ class Agent(object):
             self._cancel = True
 
     def submit(self, text, images=None, files=None, documents=None):
-        """images: data:URL; files: {"name", "path"} сохранённых моделей; documents: {"name", "text", ...}."""
         with self._lock:
             if self._busy:
                 raise AgentBusy("Агент ещё работает над предыдущим запросом")
             self._busy = True
             self._cancel = False
-        images, files, documents = images or [], files or [], documents or []
-        log("i", "user message: %s | files=%s docs=%s images=%d", short(text, 300),
-            [f["name"] for f in files], [d["name"] for d in documents], len(images))
-        attachments = [f["name"] for f in files] + \
-            ["%s (%d симв.)" % (d["name"], d["chars"]) for d in documents] + \
-            ["изображение %d" % (i + 1) for i in range(len(images))]
+
+        images = images or []
+        files = files or []
+        documents = documents or []
+
+        log(
+            "i",
+            "user message: %s | files=%s docs=%s images=%d",
+            shorten(text, 300),
+            [file["name"] for file in files],
+            [document["name"] for document in documents],
+            len(images),
+        )
+        attachments = self._attachment_labels(images, files, documents)
         self._events.emit("user", text=text, attachments=attachments)
-        thread = threading.Thread(target=self._run, args=(text, images, files, documents), name="AIAssistantAgent")
+
+        thread = threading.Thread(
+            target=self._run,
+            args=(text, images, files, documents),
+            name="AIAssistantAgent",
+        )
         thread.daemon = True
         thread.start()
         return thread
 
-    # ------------------------------------------------------------------
-    def _user_message(self, text, images, files, documents=None):
-        parts = [text or ("Задача описана в приложенном документе." if documents else "")]
-        for doc in documents or []:
-            parts.append("\nПриложенный документ «%s»%s:\n<<<\n%s\n>>>" % (
-                doc["name"], " (обрезан до %d симв.)" % doc["chars"] if doc.get("truncated") else "", doc["text"]))
+    @staticmethod
+    def _attachment_labels(images, files, documents):
+        labels = [file["name"] for file in files]
+        for document in documents:
+            labels.append("%s (%d симв.)" % (document["name"], document["chars"]))
+        for number in range(1, len(images) + 1):
+            labels.append("изображение %d" % number)
+        return labels
+
+    def _user_message(self, text, images, files, documents):
+        if text:
+            parts = [text]
+        elif documents:
+            parts = ["Задача описана в приложенном документе."]
+        else:
+            parts = [""]
+
+        for document in documents:
+            truncated_note = ""
+            if document.get("truncated"):
+                truncated_note = " (обрезан до %d симв.)" % document["chars"]
+            parts.append(
+                "\nПриложенный документ «%s»%s:\n<<<\n%s\n>>>"
+                % (document["name"], truncated_note, document["text"])
+            )
+
         if files:
             parts.append("\nПрикреплённые файлы моделей (используй путь в load_model):")
-            for f in files:
-                parts.append("- %s: %s" % (f["name"], f["path"]))
+            for file in files:
+                parts.append("- %s: %s" % (file["name"], file["path"]))
+
         if images:
             parts.append("\nПрикреплено изображений: %d." % len(images))
+
         full_text = "\n".join(parts).strip()
         if not images:
             return {"role": "user", "content": full_text}
+
         content = [{"type": "text", "text": full_text}]
-        for url in images:
-            content.append({"type": "image_url", "image_url": {"url": url}})
+        for image_url in images:
+            content.append(_image_part(image_url))
         return {"role": "user", "content": content}
 
     def _strip_old_images(self):
-        """Картинки уже проанализированы — в истории оставляем только пометку, чтобы не тратить токены."""
         for message in self._messages:
-            if message.get("role") == "user" and isinstance(message.get("content"), list):
-                texts = [p.get("text", "") for p in message["content"] if p.get("type") == "text"]
-                count = len([p for p in message["content"] if p.get("type") == "image_url"])
-                message["content"] = "\n".join(texts) + "\n[%d изображ. было приложено ранее]" % count
+            content = message.get("content")
+            if message.get("role") != "user" or not isinstance(content, list):
+                continue
 
-    def _run(self, text, images, files, documents=None):
-        run_started = time.time()
-        steps = 0
+            texts = []
+            image_count = 0
+            for part in content:
+                if part.get("type") == "text":
+                    texts.append(part.get("text", ""))
+                elif part.get("type") == "image_url":
+                    image_count += 1
+            message["content"] = "\n".join(texts) + "\n[%d изображ. было приложено ранее]" % image_count
+
+    def _run(self, text, images, files, documents):
+        started_at = time.time()
+        steps_done = 0
         try:
             self._messages.append(self._user_message(text, images, files, documents))
             tools = self._registry.openai_tools()
-            for step in range(MAX_STEPS):
-                steps = step + 1
+
+            for step in range(1, MAX_STEPS + 1):
+                steps_done = step
                 if self._cancel:
-                    log("i", "run cancelled at step %d", steps)
+                    log("i", "run cancelled at step %d", step)
                     self._events.emit("assistant", text="Остановлено пользователем.")
-                    break
-                self._events.emit("status", state="thinking")
-                started = time.time()
-                message, usage = self._llm.chat([{"role": "system", "content": SYSTEM_PROMPT}] + self._messages, tools)
-                content = message.get("content") or ""
-                tool_calls = message.get("tool_calls") or []
-                log("d", "step %d: LLM %.2fs, tokens in/out=%s/%s, tool_calls=%s, text=%s",
-                    steps, time.time() - started, usage.get("prompt_tokens"), usage.get("completion_tokens"),
-                    [(c.get("function") or {}).get("name") for c in tool_calls], short(content, 200))
-                entry = {"role": "assistant", "content": content if content else None}
-                if tool_calls:
-                    entry["tool_calls"] = tool_calls
-                self._messages.append(entry)
-                if content:
-                    self._events.emit("assistant", text=content, final=not tool_calls)
-                if not tool_calls:
-                    break
-                step_images = []
-                for call in tool_calls:
-                    if self._cancel:
-                        result = {"ok": False, "error": "Отменено пользователем"}
-                    else:
-                        function = call.get("function") or {}
-                        name = function.get("name")
-                        self._events.emit("status", state="tool", tool=name)
-                        try:
-                            args = json.loads(function.get("arguments") or "{}")
-                        except ValueError:
-                            args = None
-                        if args is None:
-                            log("w", "invalid JSON arguments for %s: %s", name, short(function.get("arguments"), 300))
-                            result = {"ok": False, "error": "Аргументы не являются корректным JSON"}
-                        else:
-                            result = self._registry.call(name, args, source="agent", call_id=call.get("id"))
-                    value = result.get("result")
-                    if result.get("ok") and isinstance(value, dict) and "_image" in value:
-                        # tool-сообщения в Chat Completions — только текст: картинку отдаём следующим
-                        # user-сообщением, после ответов на все вызовы этого шага
-                        step_images.append((function.get("name"), value["_image"]))
-                        result = dict(result, result=dict(value, _image="[снимок приложен следующим сообщением]"))
-                    payload = json.dumps(result, ensure_ascii=False, default=str)
-                    if len(payload) > MAX_TOOL_RESULT_CHARS:
-                        payload = payload[:MAX_TOOL_RESULT_CHARS] + "…(обрезано)"
-                    self._messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": payload})
-                if step_images:
-                    content = [{"type": "text", "text": "Изображения, полученные инструментами (%s). "
-                                "Оцени их и продолжай работу." % ", ".join(n for n, _ in step_images)}]
-                    content += [{"type": "image_url", "image_url": {"url": url}} for _, url in step_images]
-                    self._messages.append({"role": "user", "content": content})
-            else:
-                log("w", "step limit %d reached", MAX_STEPS)
-                self._events.emit("assistant", text="Достигнут лимит шагов агента — уточните задачу или продолжите.")
-        except LLMError as e:
-            log("e", "LLM error: %s", e)
-            self._events.emit("error", message=str(e))
-            self._rollback_dangling()
-        except Exception as e:
+                    return
+                if self._step(step, tools):
+                    return
+
+            log("w", "step limit %d reached", MAX_STEPS)
+            self._events.emit("assistant", text="Достигнут лимит шагов агента — уточните задачу или продолжите.")
+        except LLMError as error:
+            log("e", "LLM error: %s", error)
+            self._events.emit("error", message=str(error))
+            self._rollback_unanswered_tool_calls()
+        except Exception as error:
             log_exception("Agent failed")
-            self._events.emit("error", message="Внутренняя ошибка агента: %s" % e)
-            self._rollback_dangling()
+            self._events.emit("error", message="Внутренняя ошибка агента: %s" % error)
+            self._rollback_unanswered_tool_calls()
         finally:
-            log("i", "run finished: %d steps, %.1fs", steps, time.time() - run_started)
+            log("i", "run finished: %d steps, %.1fs", steps_done, time.time() - started_at)
             self._strip_old_images()
             self._busy = False
             self._events.emit("status", state="idle")
 
-    def _rollback_dangling(self):
-        """Не оставлять в истории assistant с tool_calls без ответов инструментов — API такое не примет."""
+    def _step(self, step, tools):
+        self._events.emit("status", state="thinking")
+        started_at = time.time()
+
+        history = [{"role": "system", "content": SYSTEM_PROMPT}] + self._messages
+        message, usage = self._llm.chat(history, tools)
+        content = message.get("content") or ""
+        tool_calls = message.get("tool_calls") or []
+
+        tool_names = [(call.get("function") or {}).get("name") for call in tool_calls]
+        log(
+            "d",
+            "step %d: LLM %.2fs, tokens in/out=%s/%s, tool_calls=%s, text=%s",
+            step,
+            time.time() - started_at,
+            usage.get("prompt_tokens"),
+            usage.get("completion_tokens"),
+            tool_names,
+            shorten(content, 200),
+        )
+
+        assistant_message = {"role": "assistant", "content": content or None}
+        if tool_calls:
+            assistant_message["tool_calls"] = tool_calls
+        self._messages.append(assistant_message)
+
+        if content:
+            self._events.emit("assistant", text=content, final=not tool_calls)
+        if not tool_calls:
+            return True
+
+        self._execute_tool_calls(tool_calls)
+        return False
+
+    def _execute_tool_calls(self, tool_calls):
+        images = []
+        for call in tool_calls:
+            name = (call.get("function") or {}).get("name")
+            if self._cancel:
+                result = {"ok": False, "error": "Отменено пользователем"}
+            else:
+                result = self._call_tool(call, name)
+
+            value = result.get("result")
+            if result.get("ok") and isinstance(value, dict) and "_image" in value:
+                images.append((name, value["_image"]))
+                result = dict(result, result=dict(value, _image=IMAGE_PLACEHOLDER))
+
+            self._messages.append({
+                "role": "tool",
+                "tool_call_id": call.get("id"),
+                "content": self._tool_message_content(result),
+            })
+
+        if images:
+            self._messages.append(self._images_message(images))
+
+    def _call_tool(self, call, name):
+        self._events.emit("status", state="tool", tool=name)
+        raw_arguments = (call.get("function") or {}).get("arguments") or "{}"
+        try:
+            arguments = json.loads(raw_arguments)
+        except ValueError:
+            log("w", "invalid JSON arguments for %s: %s", name, shorten(raw_arguments, 300))
+            return {"ok": False, "error": "Аргументы не являются корректным JSON"}
+        return self._registry.call(name, arguments, source="agent", call_id=call.get("id"))
+
+    @staticmethod
+    def _tool_message_content(result):
+        payload = json.dumps(result, ensure_ascii=False, default=str)
+        if len(payload) > MAX_TOOL_RESULT_CHARS:
+            payload = payload[:MAX_TOOL_RESULT_CHARS] + "…(обрезано)"
+        return payload
+
+    @staticmethod
+    def _images_message(images):
+        tool_names = ", ".join(name for name, _ in images)
+        content = [{
+            "type": "text",
+            "text": "Изображения, полученные инструментами (%s). Оцени их и продолжай работу." % tool_names,
+        }]
+        for _, image_url in images:
+            content.append(_image_part(image_url))
+        return {"role": "user", "content": content}
+
+    def _rollback_unanswered_tool_calls(self):
         while self._messages:
-            last = self._messages[-1]
-            if last.get("role") == "assistant" and last.get("tool_calls"):
+            last_message = self._messages[-1]
+
+            if last_message.get("role") == "assistant" and last_message.get("tool_calls"):
                 self._messages.pop()
                 continue
-            if last.get("role") == "tool":
-                answered = set()
-                idx = len(self._messages) - 1
-                while idx >= 0 and self._messages[idx].get("role") == "tool":
-                    answered.add(self._messages[idx].get("tool_call_id"))
-                    idx -= 1
-                if idx >= 0 and self._messages[idx].get("tool_calls"):
-                    expected = set(c.get("id") for c in self._messages[idx]["tool_calls"])
-                    if not expected.issubset(answered):
-                        del self._messages[idx:]
-                        continue
-            break
+
+            if last_message.get("role") != "tool":
+                return
+
+            index = len(self._messages) - 1
+            answered_ids = set()
+            while index >= 0 and self._messages[index].get("role") == "tool":
+                answered_ids.add(self._messages[index].get("tool_call_id"))
+                index -= 1
+
+            if index < 0 or not self._messages[index].get("tool_calls"):
+                return
+
+            expected_ids = set(call.get("id") for call in self._messages[index]["tool_calls"])
+            if expected_ids.issubset(answered_ids):
+                return
+
+            del self._messages[index:]

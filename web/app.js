@@ -43,6 +43,8 @@
   };
 
   const STATE_CHANGING_TOOLS = /^(set_|load_|move_|center_|rotate_|scale_|arrange_|delete_|apply_|reset_|start_)/;
+  const SHARED_STATE_EVENTS = ["tool_result", "settings_changed", "profile_changed", "scene_changed", "review_closed"];
+  const UNREAD_EVENTS = ["assistant", "error", "review_requested"];
   const ALLOWED_EXTENSIONS = ["stl", "obj", "3mf", "jpg", "jpeg", "png", "docx", "txt", "md"];
   const DOCUMENT_EXTENSIONS = ["docx", "txt", "md"];
   const IMAGE_EXTENSION_PATTERN = /^(jpg|jpeg|png)$/;
@@ -51,14 +53,27 @@
   const element = (id) => document.getElementById(id);
 
   let lastEventSeq = 0;
+  let serverSession = null;
   let toolCards = {};
   let reviewCards = {};
   let attachments = [];
-  let busy = false;
   let stateRefreshTimer = null;
   let stickToBottom = true;
   let dragDepth = 0;
   const welcomeHtml = element("messages").innerHTML;
+
+  // Чаты проекта. Агент один на всю сцену: работает не больше чем в одном чате.
+  let chats = [];
+  let runningChatId = null;
+  let agentBusy = false;
+  let agentState = { state: "idle", tool: null, chatId: null };
+  let sending = false;
+  // Открытый чат: история приходит одним запросом, живые события — через общий long-polling.
+  // seq — номер последнего события, уже вошедшего в историю; пока история грузится, события копятся в queue.
+  let view = { chatId: null, seq: 0, loading: false, queue: [] };
+  const unreadChats = new Set();
+  let chatsRefreshTimer = null;
+  let renamingChatId = null;
 
   function escapeHtml(value) {
     const replacements = {
@@ -640,23 +655,67 @@
     return "Готов";
   }
 
-  function setStatus(state, tool) {
-    const pill = element("status");
-    pill.className = "pill";
-    if (state === "idle") {
-      pill.classList.add("idle");
-    } else if (state === "error") {
-      pill.classList.add("error");
-    }
-    pill.textContent = statusText(state, tool);
-
-    busy = state === "thinking" || state === "tool";
-    element("btn-send").classList.toggle("hidden", busy);
-    element("btn-stop").classList.toggle("hidden", !busy);
+  function chatTitle(chatId) {
+    const chat = chats.find((item) => item.id === chatId);
+    return chat ? chat.title : "другой чат";
   }
 
-  function handleSliceState(event) {
-    setSliceBar(event.state, 0);
+  function renderStatus() {
+    const pill = element("status");
+    const runningHere = agentBusy && runningChatId === view.chatId;
+    const runningElsewhere = agentBusy && Boolean(runningChatId) && runningChatId !== view.chatId;
+
+    pill.className = "pill";
+    pill.title = "";
+    pill.onclick = null;
+    if (runningHere) {
+      const state = agentState.state === "idle" ? "thinking" : agentState.state;
+      pill.textContent = statusText(state, agentState.tool);
+    } else if (runningElsewhere) {
+      const waiting = agentState.state === "tool" && agentState.tool === "request_user_review";
+      pill.classList.add("elsewhere");
+      pill.textContent = `${waiting ? "Ждёт подтверждения" : "Работает"} в чате «${chatTitle(runningChatId)}»`;
+      pill.title = "Открыть этот чат";
+      pill.onclick = () => openChat(runningChatId);
+    } else if (agentState.state === "error" && agentState.chatId === view.chatId) {
+      pill.classList.add("error");
+      pill.textContent = statusText("error");
+    } else {
+      pill.classList.add("idle");
+      pill.textContent = statusText("idle");
+    }
+
+    element("btn-send").classList.toggle("hidden", runningHere);
+    element("btn-stop").classList.toggle("hidden", !runningHere);
+    element("btn-send").disabled = sending || runningElsewhere;
+    renderBusyNote(runningElsewhere);
+  }
+
+  function renderBusyNote(runningElsewhere) {
+    const note = element("busy-note");
+    note.classList.toggle("hidden", !runningElsewhere);
+    if (!runningElsewhere) {
+      return;
+    }
+    note.innerHTML = `Ассистент сейчас работает в чате «${escapeHtml(chatTitle(runningChatId))}». ` +
+      "Сцена слайсера общая, поэтому написать здесь можно, когда он закончит. " +
+      '<button type="button" class="linklike">Открыть тот чат</button>';
+    note.querySelector("button").onclick = () => openChat(runningChatId);
+  }
+
+  function handleStatusEvent(event) {
+    agentState = { state: event.state, tool: event.tool, chatId: event.chat_id };
+    agentBusy = event.state === "thinking" || event.state === "tool";
+    if (agentBusy) {
+      runningChatId = event.chat_id;
+    }
+    renderStatus();
+  }
+
+  function handleSliceState(event, replaying) {
+    if (!replaying) {
+      setSliceBar(event.state, 0);
+    }
     if (event.state === "done") {
       renderSliceDone(event.result);
     }
@@ -673,14 +732,35 @@
     reviewCards = {};
   }
 
-  function handleEvent(rawEvent) {
+  // После показа сохранённой истории: незавершённое в чате, где агент уже не работает, помечаем прерванным.
+  function finishReplay(chatIsRunning) {
+    if (chatIsRunning) {
+      return;
+    }
+    Object.keys(toolCards).forEach((callId) => {
+      const card = toolCards[callId];
+      if (!card.classList.contains("run")) {
+        return;
+      }
+      card.className = "tool fail";
+      card.querySelector(".t-icon").textContent = "–";
+      card.querySelector(".t-meta").textContent = "прервано";
+    });
+    Object.keys(reviewCards).forEach((reviewId) => {
+      const card = reviewCards[reviewId];
+      if (card.classList.contains("closed")) {
+        return;
+      }
+      setFormDisabled(card.querySelector("form"), true);
+      card.classList.add("closed");
+      card.querySelector(".review-status").textContent = "Проверка не завершена";
+    });
+  }
+
+  function handleEvent(rawEvent, replaying) {
     const payload = rawEvent.data || {};
     const event = Object.assign({}, payload, rawEvent);
-
     switch (event.type) {
-      case "reset":
-        resetChat();
-        break;
       case "user":
         renderUserMessage(event);
         break;
@@ -702,10 +782,7 @@
         scheduleStateRefresh();
         break;
       case "slice_state":
-        handleSliceState(event);
-        break;
-      case "slice_progress":
-        setSliceBar("processing", event.progress);
+        handleSliceState(event, replaying);
         break;
       case "snapshot":
         renderSnapshot(event);
@@ -719,36 +796,348 @@
       case "review_closed":
         renderReviewClosed(event);
         break;
-      case "status":
-        setStatus(event.state, event.tool);
-        break;
       case "error":
         appendToChat(createDiv("msg error", "⚠ " + escapeHtml(event.message)));
-        setStatus("error");
+        if (!replaying) {
+          agentState = { state: "error", tool: null, chatId: event.chat_id };
+          renderStatus();
+        }
         break;
+    }
+  }
+
+  // Каждое событие шины проходит здесь: общее (статус, список чатов, слайсер) — обрабатываем всегда,
+  // события открытого чата — рисуем, остальные чаты только помечаем непрочитанными.
+  function dispatchEvent(event) {
+    if (event.type === "chats") {
+      handleChatsEvent(event);
+      return;
+    }
+    if (event.type === "status") {
+      handleStatusEvent(event);
+      return;
+    }
+    if (event.type === "slice_progress") {
+      setSliceBar("processing", event.progress);
+      return;
+    }
+
+    if (event.chat_id !== view.chatId) {
+      if (event.type === "slice_state") {
+        setSliceBar(event.state, 0);
+      }
+      if (SHARED_STATE_EVENTS.includes(event.type) || event.type === "slice_state") {
+        scheduleStateRefresh();
+      }
+      if (UNREAD_EVENTS.includes(event.type)) {
+        markUnread(event.chat_id);
+      }
+      return;
+    }
+
+    if (view.loading) {
+      view.queue.push(event);
+      return;
+    }
+    if (event.seq > view.seq) {
+      handleEvent(event, false);
     }
   }
 
   async function pollEvents() {
     try {
-      const response = await fetch(`/api/events?since=${lastEventSeq}&wait=20`);
+      const response = await fetch(`/api/events?since=${lastEventSeq}&wait=20&session=${serverSession}`);
       const data = await response.json();
+      if (data.session !== serverSession) {
+        // Слайсер перезапустили: номера событий начались заново — перечитываем чаты.
+        start();
+        return;
+      }
       const events = data.events || [];
 
       events.forEach((event) => {
         lastEventSeq = Math.max(lastEventSeq, event.id || event.seq || 0);
-        handleEvent(event);
+        dispatchEvent(event);
       });
-      if (!data.busy && busy && events.length === 0) {
-        setStatus("idle");
-      }
+      syncAgentState(Boolean(data.busy), data.running_chat || null);
       pollEvents();
     } catch (error) {
       const pill = element("status");
       pill.className = "pill error";
+      pill.onclick = null;
       pill.textContent = "Нет связи со слайсером";
       setTimeout(pollEvents, 2000);
     }
+  }
+
+  function syncAgentState(busy, chatId) {
+    if (busy === agentBusy && chatId === runningChatId) {
+      renderStatus();
+      return;
+    }
+    agentBusy = busy;
+    runningChatId = busy ? chatId : null;
+    if (!busy && agentState.state !== "error") {
+      agentState = { state: "idle", tool: null, chatId: null };
+    }
+    renderStatus();
+    renderChatList();
+  }
+
+  function markUnread(chatId) {
+    if (!chatId || chatId === view.chatId || unreadChats.has(chatId)) {
+      return;
+    }
+    unreadChats.add(chatId);
+    renderChatList();
+  }
+
+  function handleChatsEvent(event) {
+    if (event.action === "run_started") {
+      agentBusy = true;
+      runningChatId = event.target;
+    } else if (event.action === "run_finished" && runningChatId === event.target) {
+      agentBusy = false;
+      runningChatId = null;
+    }
+    renderStatus();
+    scheduleChatsRefresh();
+  }
+
+  function scheduleChatsRefresh() {
+    clearTimeout(chatsRefreshTimer);
+    chatsRefreshTimer = setTimeout(refreshChats, 150);
+  }
+
+  async function refreshChats() {
+    let listing;
+    try {
+      listing = await api("/api/chats");
+    } catch (error) {
+      return;
+    }
+    applyListing(listing);
+    if (view.chatId && !chats.some((chat) => chat.id === view.chatId)) {
+      openChat(listing.active_id);
+    }
+  }
+
+  function applyListing(listing) {
+    chats = listing.chats || [];
+    runningChatId = listing.running_id || null;
+    agentBusy = Boolean(runningChatId);
+    renderChatList();
+    renderStatus();
+    updateDocumentTitle();
+  }
+
+  function updateDocumentTitle() {
+    const chat = chats.find((item) => item.id === view.chatId);
+    document.title = chat && !chat.empty ? `${chat.title} · STE AI-ассистент` : "STE AI-ассистент";
+  }
+
+  function formatChatTime(timestamp) {
+    const date = new Date(timestamp * 1000);
+    const time = date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+    if (date.toDateString() === new Date().toDateString()) {
+      return time;
+    }
+    return `${date.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })} ${time}`;
+  }
+
+  function chatMetaHtml(chat) {
+    if (chat.id === runningChatId) {
+      return '<span class="spin"></span> работает';
+    }
+    if (chat.empty) {
+      return "пустой";
+    }
+    return escapeHtml(formatChatTime(chat.updated));
+  }
+
+  function renderChatList() {
+    if (renamingChatId) {
+      return;
+    }
+
+    const list = element("chat-list");
+    list.innerHTML = "";
+    chats.forEach((chat) => {
+      const item = document.createElement("li");
+      item.className = "chat-item";
+      item.dataset.id = chat.id;
+      item.classList.toggle("active", chat.id === view.chatId);
+      item.classList.toggle("running", chat.id === runningChatId);
+      item.classList.toggle("unread", unreadChats.has(chat.id));
+      item.innerHTML = `
+        <div class="ci-main">
+          <div class="ci-title" title="${escapeHtml(chat.title)}">${escapeHtml(chat.title)}</div>
+          <div class="ci-meta">${chatMetaHtml(chat)}</div>
+        </div>
+        <span class="ci-dot" title="Новый ответ"></span>
+        <div class="ci-actions">
+          <button type="button" class="ci-btn" data-action="rename" title="Переименовать">✎</button>
+          <button type="button" class="ci-btn" data-action="delete" title="Удалить чат">✕</button>
+        </div>`;
+      list.appendChild(item);
+    });
+  }
+
+  function onChatListClick(event) {
+    const item = event.target.closest(".chat-item");
+    if (!item || event.target.closest(".ci-input")) {
+      return;
+    }
+
+    const button = event.target.closest(".ci-btn");
+    if (button && button.dataset.action === "rename") {
+      startRename(item.dataset.id);
+    } else if (button && button.dataset.action === "delete") {
+      deleteChat(item.dataset.id);
+    } else if (item.dataset.id !== view.chatId) {
+      openChat(item.dataset.id);
+    } else {
+      closeChatsDrawer();
+    }
+  }
+
+  async function openChat(chatId) {
+    if (!chatId) {
+      return;
+    }
+
+    view = { chatId: chatId, seq: Infinity, loading: true, queue: [] };
+    unreadChats.delete(chatId);
+    renderChatList();
+    renderStatus();
+    updateDocumentTitle();
+    closeChatsDrawer();
+    api("/api/chats/select", { chat_id: chatId }).catch(() => {});
+
+    let history;
+    try {
+      history = await api(`/api/chat?id=${encodeURIComponent(chatId)}`);
+    } catch (error) {
+      if (view.chatId === chatId) {
+        view = { chatId: chatId, seq: lastEventSeq, loading: false, queue: [] };
+        resetChat();
+        appendToChat(createDiv("msg error", "⚠ Не удалось открыть чат: " + escapeHtml(error.message)));
+        refreshChats();
+      }
+      return;
+    }
+    if (view.chatId !== chatId) {
+      return;
+    }
+    showHistory(history);
+  }
+
+  function showHistory(history) {
+    resetChat();
+    stickToBottom = true;
+    history.events.forEach((event) => handleEvent(event, true));
+    finishReplay(history.chat.running);
+
+    const queued = view.queue;
+    view.seq = history.seq;
+    view.loading = false;
+    view.queue = [];
+    queued.forEach((event) => {
+      if (event.seq > view.seq) {
+        handleEvent(event, false);
+      }
+    });
+
+    scrollToBottom();
+    renderStatus();
+    element("input").focus();
+  }
+
+  async function createChat() {
+    try {
+      const data = await api("/api/chats/new", {});
+      await refreshChats();
+      openChat(data.chat.id);
+    } catch (error) {
+      appendToChat(createDiv("msg error", "⚠ " + escapeHtml(error.message)));
+    }
+  }
+
+  function startRename(chatId) {
+    const chat = chats.find((item) => item.id === chatId);
+    const item = element("chat-list").querySelector(`[data-id="${chatId}"]`);
+    if (!chat || !item) {
+      return;
+    }
+
+    const input = document.createElement("input");
+    input.className = "ci-input";
+    input.value = chat.title;
+    input.maxLength = 80;
+    item.querySelector(".ci-title").replaceWith(input);
+    renamingChatId = chatId;
+    input.focus();
+    input.select();
+
+    let finished = false;
+    const finish = async (save) => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      renamingChatId = null;
+
+      const title = input.value.trim();
+      if (save && title && title !== chat.title) {
+        try {
+          await api("/api/chats/rename", { chat_id: chatId, title: title });
+        } catch (error) {
+          appendToChat(createDiv("msg error", "⚠ " + escapeHtml(error.message)));
+        }
+      }
+      refreshChats();
+    };
+
+    input.addEventListener("keydown", (keyEvent) => {
+      if (keyEvent.key === "Enter") {
+        keyEvent.preventDefault();
+        finish(true);
+      } else if (keyEvent.key === "Escape") {
+        finish(false);
+      }
+    });
+    input.addEventListener("blur", () => finish(true));
+  }
+
+  async function deleteChat(chatId) {
+    const chat = chats.find((item) => item.id === chatId);
+    if (!chat) {
+      return;
+    }
+    if (chatId === runningChatId) {
+      alert("В этом чате сейчас работает ассистент. Остановите его, затем удалите чат.");
+      return;
+    }
+    const question = `Удалить чат «${chat.title}»? Переписка удалится без возможности восстановления. ` +
+      "Модели и настройки в слайсере не изменятся.";
+    if (!chat.empty && !confirm(question)) {
+      return;
+    }
+
+    try {
+      const listing = await api("/api/chats/delete", { chat_id: chatId });
+      unreadChats.delete(chatId);
+      applyListing(listing);
+      if (chatId === view.chatId) {
+        openChat(listing.active_id);
+      }
+    } catch (error) {
+      appendToChat(createDiv("msg error", "⚠ " + escapeHtml(error.message)));
+    }
+  }
+
+  function closeChatsDrawer() {
+    element("chats").classList.remove("open");
   }
 
   function scheduleStateRefresh() {
@@ -872,11 +1261,13 @@
     }
 
     const payload = {
+      chat_id: view.chatId,
       text: text,
       attachments: attachments.map((attachment) => ({ name: attachment.name, data: attachment.data })),
     };
 
-    element("btn-send").disabled = true;
+    sending = true;
+    renderStatus();
     stickToBottom = true;
     try {
       await api("/api/message", payload);
@@ -889,7 +1280,8 @@
         openSettings();
       }
     } finally {
-      element("btn-send").disabled = false;
+      sending = false;
+      renderStatus();
     }
   }
 
@@ -1051,12 +1443,6 @@
     });
   }
 
-  function confirmReset() {
-    if (confirm("Начать новый диалог? История будет очищена.")) {
-      api("/api/reset", {});
-    }
-  }
-
   function bindDragAndDrop() {
     const dropOverlay = element("drop");
 
@@ -1112,7 +1498,16 @@
     });
 
     element("btn-stop").addEventListener("click", () => api("/api/stop", {}));
-    element("btn-reset").addEventListener("click", confirmReset);
+    element("btn-new-chat").addEventListener("click", createChat);
+    element("btn-chats").addEventListener("click", () => element("chats").classList.toggle("open"));
+    document.querySelector("main.chat").addEventListener("click", closeChatsDrawer);
+    element("chat-list").addEventListener("click", onChatListClick);
+    element("chat-list").addEventListener("dblclick", (event) => {
+      const item = event.target.closest(".chat-item");
+      if (item && event.target.closest(".ci-title")) {
+        startRename(item.dataset.id);
+      }
+    });
     element("btn-settings").addEventListener("click", openSettings);
     element("btn-shot").addEventListener("click", takeScreenshot);
     element("btn-cancel").addEventListener("click", () => element("settings").close());
@@ -1128,8 +1523,26 @@
     bindDragAndDrop();
   }
 
+  async function start() {
+    let listing;
+    try {
+      listing = await api("/api/chats");
+    } catch (error) {
+      const pill = element("status");
+      pill.className = "pill error";
+      pill.textContent = "Нет связи со слайсером";
+      setTimeout(start, 2000);
+      return;
+    }
+    lastEventSeq = listing.seq;
+    serverSession = listing.session;
+    applyListing(listing);
+    openChat(listing.active_id);
+    pollEvents();
+  }
+
   bindEvents();
   loadConfig();
   refreshState();
-  pollEvents();
+  start();
 })();

@@ -8,16 +8,26 @@
 </head>
 <body>
   <header class="topbar">
+    <button id="btn-chats" class="ghost chats-toggle" title="Чаты проекта">☰</button>
     <div class="brand"><span class="logo">◆</span> STE Slicer · <b>AI-ассистент</b></div>
     <div id="status" class="pill idle">Готов</div>
     <div class="actions">
       <button id="btn-shot" class="ghost" title="Сохранить скриншот переписки (PNG)">📸 Скриншот</button>
-      <button id="btn-reset" class="ghost" title="Начать новый диалог">↺ Новый диалог</button>
       <button id="btn-settings" class="ghost">⚙ Настройки</button>
     </div>
   </header>
 
   <div class="layout">
+    <nav id="chats" class="chats">
+      <h3>Чаты проекта</h3>
+      <button type="button" id="btn-new-chat" class="primary new-chat" title="Начать новый чат, прежние сохранятся">＋ Новый чат</button>
+      <ul id="chat-list" class="chat-list"></ul>
+      <div class="muted small chats-note">
+        Сцена и настройки слайсера общие для всех чатов, у каждого чата — своя история для ассистента.
+        Ассистент работает в одном чате за раз.
+      </div>
+    </nav>
+
     <main class="chat">
       <div id="scroll" class="scroll">
         <div id="messages" class="messages">
@@ -41,6 +51,7 @@
       </div>
 
       <form id="composer" class="composer">
+        <div id="busy-note" class="busy-note hidden"></div>
         <div id="attachments" class="attachments"></div>
         <div class="row">
           <label class="attach" title="Прикрепить модель (STL/OBJ/3MF), фото (JPG/PNG) или ТЗ (DOCX/TXT)">

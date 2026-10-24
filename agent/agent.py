@@ -3,7 +3,7 @@ import threading
 import time
 
 from .chats import ChatManager, drop_unanswered_tool_calls, strip_images
-from .llm import LLMError
+from .ai import LLMError
 from .core import Logger
 
 MAX_STEPS = 40

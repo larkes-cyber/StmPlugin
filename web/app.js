@@ -33,6 +33,13 @@
     export_gcode: "Экспорт G-code",
     save_project_3mf: "Сохранение 3MF",
     export_results: "Сохранение результатов",
+    request_user_review: "Проверка пользователем",
+  };
+
+  const REVIEW_STATUS_TEXT = {
+    approved: "Подтверждено",
+    cancelled: "Проверка остановлена",
+    timeout: "Время ожидания истекло",
   };
 
   const STATE_CHANGING_TOOLS = /^(set_|load_|move_|center_|rotate_|scale_|arrange_|delete_|apply_|reset_|start_)/;
@@ -45,6 +52,7 @@
 
   let lastEventSeq = 0;
   let toolCards = {};
+  let reviewCards = {};
   let attachments = [];
   let busy = false;
   let stateRefreshTimer = null;
@@ -374,6 +382,235 @@
     }
   }
 
+  function optionsHtml(options, selectedValue) {
+    return options
+      .map((option) => {
+        const selected = option.value === selectedValue ? " selected" : "";
+        return `<option value="${escapeHtml(option.value)}"${selected}>${escapeHtml(option.label)}</option>`;
+      })
+      .join("");
+  }
+
+  function selectHtml(name, options, selectedValue) {
+    const initial = selectedValue || "";
+    const choices = options.slice();
+    if (!choices.some((option) => option.value === initial)) {
+      choices.unshift({ value: initial, label: initial || "—" });
+    }
+    return `<select name="${name}" data-initial="${escapeHtml(initial)}">${optionsHtml(choices, initial)}</select>`;
+  }
+
+  function numberInputHtml(name, value) {
+    const initial = value === null || value === undefined ? "" : String(value);
+    return `<input type="number" step="any" name="${name}" value="${escapeHtml(initial)}" data-initial="${escapeHtml(initial)}">`;
+  }
+
+  function materialLabel(material) {
+    const parts = [material.brand, material.name].filter(Boolean);
+    return parts.length > 0 ? parts.join(" ") : material.id;
+  }
+
+  function materialOptions(proposal) {
+    const options = (proposal.materials || []).map((material) => ({
+      value: material.id,
+      label: materialLabel(material),
+    }));
+
+    const current = proposal.material;
+    const hasCurrent = current && options.some((option) => option.value === current.id);
+    if (current && !hasCurrent) {
+      options.unshift({ value: current.id, label: current.name || current.id });
+    }
+    return options;
+  }
+
+  function reviewModeSection(proposal) {
+    const currentMaterial = proposal.material ? proposal.material.id : "";
+    return `
+      <fieldset>
+        <legend>Режим и материал</legend>
+        <label>Режим печати ${selectHtml("print_mode", proposal.print_modes || [], proposal.print_mode)}</label>
+        <label>Материал ${selectHtml("material_id", materialOptions(proposal), currentMaterial)}</label>
+      </fieldset>`;
+  }
+
+  function reviewSettingsSection(settings) {
+    const rows = settings.map((setting) => {
+      const unit = setting.unit ? `, ${escapeHtml(setting.unit)}` : "";
+      const label = escapeHtml(setting.label || setting.key);
+      return `<label>${label}${unit} ${numberInputHtml("setting:" + setting.key, setting.value)}</label>`;
+    });
+
+    return `
+      <fieldset>
+        <legend>Параметры печати</legend>
+        ${rows.join("")}
+      </fieldset>`;
+  }
+
+  function reviewPlacementSection(objects) {
+    if (objects.length === 0) {
+      return "";
+    }
+
+    const first = objects[0];
+    const objectChoices = objects.map((object) => ({
+      value: object.object_id,
+      label: `${object.object_id} ${object.name}`,
+    }));
+
+    return `
+      <fieldset>
+        <legend>Размещение модели</legend>
+        <label>Объект ${selectHtml("object_id", objectChoices, first.object_id)}</label>
+        <label>Центр X, мм ${numberInputHtml("x", first.center_mm.x)}</label>
+        <label>Центр Y, мм ${numberInputHtml("y", first.center_mm.y)}</label>
+        <label>Масштаб, % ${numberInputHtml("scale_percent", first.scale_pct.x)}</label>
+        <label>Повернуть вокруг X, ° ${numberInputHtml("rotate_x", 0)}</label>
+        <label>Повернуть вокруг Y, ° ${numberInputHtml("rotate_y", 0)}</label>
+        <label>Повернуть вокруг Z, ° ${numberInputHtml("rotate_z", 0)}</label>
+      </fieldset>`;
+  }
+
+  function resetField(field, value) {
+    field.value = value;
+    field.dataset.initial = String(value);
+  }
+
+  function bindObjectSelect(form, objects) {
+    if (!form.object_id) {
+      return;
+    }
+
+    form.object_id.addEventListener("change", () => {
+      const object = objects.find((item) => item.object_id === form.object_id.value);
+      if (!object) {
+        return;
+      }
+      form.object_id.dataset.initial = object.object_id;
+      resetField(form.x, object.center_mm.x);
+      resetField(form.y, object.center_mm.y);
+      resetField(form.scale_percent, object.scale_pct.x);
+    });
+  }
+
+  function changedFields(form) {
+    return Array.from(form.querySelectorAll("[data-initial]")).filter((field) => {
+      return field.value !== "" && field.value !== field.dataset.initial;
+    });
+  }
+
+  function collectReviewChanges(form) {
+    const changes = {};
+    const settings = {};
+    const placement = {};
+
+    changedFields(form).forEach((field) => {
+      if (field.name === "print_mode" || field.name === "material_id") {
+        changes[field.name] = field.value;
+      } else if (field.name.startsWith("setting:")) {
+        settings[field.name.slice("setting:".length)] = Number(field.value);
+      } else if (field.name !== "object_id") {
+        placement[field.name] = Number(field.value);
+      }
+    });
+
+    if (Object.keys(settings).length > 0) {
+      changes.settings = settings;
+    }
+    if (Object.keys(placement).length > 0) {
+      placement.object_id = form.object_id.value;
+      changes.placement = placement;
+    }
+    return changes;
+  }
+
+  function setFormDisabled(form, disabled) {
+    Array.from(form.elements).forEach((field) => {
+      field.disabled = disabled;
+    });
+  }
+
+  async function submitReview(reviewId, form) {
+    const button = form.querySelector("button[type=submit]");
+    const status = form.querySelector(".review-status");
+    const payload = {
+      review_id: reviewId,
+      changes: collectReviewChanges(form),
+      comment: form.comment.value,
+    };
+
+    button.disabled = true;
+    try {
+      await api("/api/review", payload);
+      setFormDisabled(form, true);
+      status.textContent = "Отправлено, применяю изменения…";
+    } catch (error) {
+      button.disabled = false;
+      status.textContent = error.message;
+    }
+  }
+
+  function renderReviewRequest(event) {
+    const proposal = event.proposal || {};
+    const card = createDiv("card review");
+    card.innerHTML = `
+      <div class="c-title">Проверьте параметры перед слайсингом</div>
+      <div class="reason">${escapeHtml(event.summary || "")}</div>
+      <form class="review-form">
+        ${reviewModeSection(proposal)}
+        ${reviewSettingsSection(proposal.settings || [])}
+        ${reviewPlacementSection(proposal.objects || [])}
+        <label class="review-comment">
+          Комментарий для ассистента
+          <textarea name="comment" rows="2" placeholder="Например: сделай стенки толще"></textarea>
+        </label>
+        <div class="review-actions">
+          <button type="submit" class="primary">Продолжить</button>
+          <span class="review-status muted small"></span>
+        </div>
+      </form>`;
+
+    const form = card.querySelector("form");
+    bindObjectSelect(form, proposal.objects || []);
+    form.addEventListener("submit", (submitEvent) => {
+      submitEvent.preventDefault();
+      submitReview(event.review_id, form);
+    });
+
+    reviewCards[event.review_id] = card;
+    appendToChat(card);
+  }
+
+  function reviewResultText(event) {
+    let text = REVIEW_STATUS_TEXT[event.status] || event.status;
+
+    if (event.status === "approved") {
+      const applied = event.applied || [];
+      if (applied.length > 0) {
+        text += ". Изменено: " + applied.join("; ");
+      } else {
+        text += " без изменений";
+      }
+    }
+    if (event.errors && event.errors.length > 0) {
+      text += ". Не удалось: " + event.errors.join("; ");
+    }
+    return text;
+  }
+
+  function renderReviewClosed(event) {
+    const card = reviewCards[event.review_id];
+    if (!card) {
+      return;
+    }
+
+    setFormDisabled(card.querySelector("form"), true);
+    card.classList.add("closed");
+    card.querySelector(".review-status").textContent = reviewResultText(event);
+    scheduleStateRefresh();
+  }
+
   function setSliceBar(state, progress) {
     const bar = element("slice-bar");
     if (state !== "processing") {
@@ -390,6 +627,9 @@
   function statusText(state, tool) {
     if (state === "thinking") {
       return "Думает…";
+    }
+    if (state === "tool" && tool === "request_user_review") {
+      return "Ждёт вашего подтверждения";
     }
     if (state === "tool") {
       return "Выполняет: " + (TOOL_LABELS[tool] || tool);
@@ -430,6 +670,7 @@
     element("messages").innerHTML = welcomeHtml;
     bindExamples();
     toolCards = {};
+    reviewCards = {};
   }
 
   function handleEvent(event) {
@@ -468,6 +709,12 @@
         break;
       case "file_saved":
         renderSavedFile(event);
+        break;
+      case "review_requested":
+        renderReviewRequest(event);
+        break;
+      case "review_closed":
+        renderReviewClosed(event);
         break;
       case "status":
         setStatus(event.state, event.tool);

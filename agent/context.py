@@ -3,6 +3,7 @@ from .config import Config
 from .events import EventBus
 from .llm import LLMClient
 from .mcp import MCPServer
+from .review import ReviewGate
 from .server import start_server
 from .slicer import SlicerAPI
 from .tools import build_registry
@@ -13,7 +14,8 @@ class Context(object):
         self.config = config or Config()
         self.events = EventBus()
         self.slicer = slicer_factory(self.events, self.config)
-        self.registry = build_registry(self.slicer, self.events)
+        self.review = ReviewGate(self.events, self.slicer)
+        self.registry = build_registry(self.slicer, self.events, self.review)
         self.mcp = MCPServer(self.registry)
         self.llm = llm or LLMClient(self.config)
         self.agent = Agent(self.config, self.registry, self.events, self.llm)

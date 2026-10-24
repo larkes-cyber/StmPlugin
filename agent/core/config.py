@@ -18,6 +18,7 @@ DEFAULT_SETTINGS = {
     "temperature": 0.2,
     "verify_ssl": True,
     "server_addr": "127.0.0.1:8765",
+    "main_thread_timeout": 120.0,
     "output_dir": os.path.join(os.path.expanduser("~"), "Documents", "STE_AI_results"),
 }
 

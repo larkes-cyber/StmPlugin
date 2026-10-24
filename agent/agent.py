@@ -4,7 +4,6 @@ import time
 
 from .llm import LLMError
 from .log import log, log_exception, shorten
-from .prompts import SYSTEM_PROMPT
 
 MAX_STEPS = 40
 MAX_TOOL_RESULT_CHARS = 12000
@@ -20,8 +19,9 @@ def _image_part(image_url):
 
 
 class Agent(object):
-    def __init__(self, config, registry, events, llm):
+    def __init__(self, config, registry, events, llm, system_prompt):
         self._config = config
+        self._system_prompt = system_prompt
         self._registry = registry
         self._events = events
         self._llm = llm
@@ -141,6 +141,8 @@ class Agent(object):
         try:
             self._messages.append(self._user_message(text, images, files, documents))
             tools = self._registry.openai_tools()
+            prompt_kind = "custom" if self._system_prompt.is_custom() else "default"
+            log("i", "system prompt: %s", prompt_kind)
 
             for step in range(1, MAX_STEPS + 1):
                 steps_done = step
@@ -171,7 +173,7 @@ class Agent(object):
         self._events.emit("status", state="thinking")
         started_at = time.time()
 
-        history = [{"role": "system", "content": SYSTEM_PROMPT}] + self._messages
+        history = [{"role": "system", "content": self._system_prompt.text()}] + self._messages
         message, usage = self._llm.chat(history, tools)
         content = message.get("content") or ""
         tool_calls = message.get("tool_calls") or []

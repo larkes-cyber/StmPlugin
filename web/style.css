@@ -686,6 +686,25 @@ dialog input:not([type=checkbox]) {
   font: inherit;
 }
 
+dialog.prompt-dialog {
+  width: min(900px, 95vw);
+}
+
+.prompt-dialog textarea {
+  display: block;
+  width: 100%;
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
 .dialog-actions {
   display: flex;
   gap: 8px;

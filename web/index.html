@@ -65,6 +65,11 @@
         <code id="mcp-url" class="mcp-url">—</code>
         <div id="tool-count" class="muted small"></div>
       </section>
+      <section>
+        <h3>Системный промпт</h3>
+        <div id="prompt-kind" class="muted small">—</div>
+        <button type="button" id="btn-prompt-side" class="ghost small">Редактировать</button>
+      </section>
     </aside>
   </div>
 
@@ -80,12 +85,30 @@
       <label class="check"><input name="verify_ssl" type="checkbox"> Проверять SSL-сертификат</label>
       <h3>Результаты</h3>
       <label>Папка для results/<input name="output_dir" autocomplete="off"></label>
+      <h3>Системный промпт</h3>
+      <div class="muted small">От промпта зависит, как ассистент выбирает режим, материал и настройки.</div>
+      <button type="button" id="btn-prompt" class="ghost">Редактировать системный промпт</button>
       <div id="settings-msg" class="small"></div>
       <div class="dialog-actions">
         <button type="button" id="btn-test" class="ghost">Проверить подключение</button>
         <span class="spacer"></span>
         <button type="button" id="btn-cancel" class="ghost">Закрыть</button>
         <button type="submit" id="btn-save" class="primary">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="prompt-dialog" class="prompt-dialog">
+    <form id="prompt-form" method="dialog">
+      <h3>Системный промпт</h3>
+      <div id="prompt-info" class="muted small"></div>
+      <textarea name="text" rows="24" spellcheck="false"></textarea>
+      <div id="prompt-msg" class="small"></div>
+      <div class="dialog-actions">
+        <button type="button" id="btn-prompt-reset" class="ghost">Вернуть стандартный</button>
+        <span class="spacer"></span>
+        <button type="button" id="btn-prompt-cancel" class="ghost">Закрыть</button>
+        <button type="submit" class="primary">Сохранить</button>
       </div>
     </form>
   </dialog>

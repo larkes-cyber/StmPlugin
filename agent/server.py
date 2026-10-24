@@ -172,6 +172,8 @@ def make_handler(ctx):
                     self._get_config()
                 elif url.path == "/api/state":
                     self._get_state()
+                elif url.path == "/api/system_prompt":
+                    self._send_json(ctx.system_prompt.state())
                 elif url.path == "/mcp":
                     self._send(405, b"", "text/plain", {"Allow": "POST"})
                 else:
@@ -193,6 +195,7 @@ def make_handler(ctx):
             data["tools"] = ctx.registry.names()
             data["plugin_version"] = plugin_version()
             data["plugin_dir"] = PLUGIN_DIR
+            data["system_prompt_custom"] = ctx.system_prompt.is_custom()
             self._send_json(data)
 
         def _get_state(self):
@@ -247,6 +250,10 @@ def make_handler(ctx):
             data = json.loads(body) if body else {}
             if path == "/api/message":
                 self._post_message(data)
+            elif path == "/api/system_prompt":
+                self._post_system_prompt(data)
+            elif path == "/api/system_prompt/reset":
+                self._post_system_prompt_reset()
             elif path == "/api/review":
                 self._post_review(data)
             elif path == "/api/stop":
@@ -271,6 +278,17 @@ def make_handler(ctx):
                 self._send(202, b"", "application/json")
             else:
                 self._send_json(response)
+
+        def _post_system_prompt(self, data):
+            ctx.system_prompt.save(data.get("text"))
+            state = ctx.system_prompt.state()
+            log("i", "system prompt saved: custom=%s, %d chars", state["is_custom"], len(state["text"]))
+            self._send_json(state)
+
+        def _post_system_prompt_reset(self):
+            ctx.system_prompt.reset()
+            log("i", "system prompt reset to default")
+            self._send_json(ctx.system_prompt.state())
 
         def _post_review(self, data):
             review_id = data.get("review_id")

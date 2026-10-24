@@ -118,9 +118,12 @@ class Config(object):
         if new_settings.get("clear_api_key"):
             self.set("api_key", "")
 
-    def public_dict(self) -> Dict[str, Any]:
+    def public_dict(self):
         data = {k: self.get(k) for k in DEFAULT_SETTINGS if k != "api_key"}
-        data["api_key_set"] = bool(self.get("api_key"))
+        api_key = str(self.get("api_key") or "").strip()
+        data["api_key_set"] = bool(api_key)
+        data["api_key_hint"] = ("…" + api_key[-4:]) if len(api_key) >= 4 else ("✓" if api_key else "")
+        data["llm_ready"] = self.llm_ready()
         data["name"] = self.name
         data["version"] = self.version
         return data

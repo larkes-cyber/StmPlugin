@@ -67,6 +67,8 @@ def handle_get_config(ctx, handler, query):
     data = ctx.config.public_dict()
     data["plugin_version"] = ctx.config.version
     data["plugin_dir"] = ctx.config.plugin_dir
+    data["tools"] = ctx.registry.names() if hasattr(ctx, "registry") else []
+    data["system_prompt_custom"] = ctx.system_prompt.is_custom() if hasattr(ctx, "system_prompt") else False
     handler.send_json(data)
 
 

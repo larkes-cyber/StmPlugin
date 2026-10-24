@@ -247,11 +247,15 @@ def make_handler(ctx):
             data = json.loads(body) if body else {}
             if path == "/api/message":
                 self._post_message(data)
+            elif path == "/api/review":
+                self._post_review(data)
             elif path == "/api/stop":
                 ctx.agent.stop()
+                ctx.review.cancel()
                 self._send_json({"ok": True})
             elif path == "/api/reset":
                 ctx.agent.reset()
+                ctx.review.cancel()
                 self._send_json({"ok": True})
             elif path == "/api/config":
                 self._post_config(data)
@@ -267,6 +271,15 @@ def make_handler(ctx):
                 self._send(202, b"", "application/json")
             else:
                 self._send_json(response)
+
+        def _post_review(self, data):
+            review_id = data.get("review_id")
+            changes = data.get("changes") or {}
+            comment = data.get("comment") or ""
+
+            log("i", "review %s answered: changes=%s comment=%s", review_id, shorten(changes), shorten(comment, 200))
+            ctx.review.answer(review_id, changes, comment)
+            self._send_json({"ok": True})
 
         def _post_message(self, data):
             text = (data.get("text") or "").strip()

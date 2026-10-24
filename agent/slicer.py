@@ -53,6 +53,17 @@ BACKEND_STATE_NAMES = {
 TRUE_STRINGS = ("true", "1", "yes", "on", "да")
 TEMPERATURE_PATTERN = re.compile(r"\bS(\d+(?:\.\d+)?)")
 
+REVIEW_SETTING_KEYS = (
+    "layer_height",
+    "cylindrical_layer_height",
+    "infill_sparse_density",
+    "speed_print",
+    "material_print_temperature",
+    "material_bed_temperature",
+)
+FIVE_AXIS_ONLY_KEYS = ("cylindrical_layer_height",)
+USER_CHANGE_REASON = "Изменено пользователем"
+
 LOAD_TIMEOUT = 120
 SLICE_TIMEOUT = 900
 WRITE_TIMEOUT = 120
@@ -462,29 +473,34 @@ class SlicerAPI(object):
 
     @on_main
     def list_materials(self, query=None):
-        material_nodes = self._available_materials()
         query = (query or "").lower()
 
         materials = []
-        for material_id, node in material_nodes.items():
-            material = {
-                "id": material_id,
-                "name": node.getMetaDataEntry("name"),
-                "type": node.getMetaDataEntry("material"),
-                "brand": node.getMetaDataEntry("brand"),
-                "color": node.getMetaDataEntry("color_name"),
-            }
+        for material in self._material_entries():
             searchable_text = " ".join(str(value) for value in material.values()).lower()
             if query and query not in searchable_text:
                 continue
             materials.append(material)
 
-        materials.sort(key=lambda item: (str(item["type"]), str(item["brand"]), str(item["name"])))
         return {
             "active": self._active_material(),
             "materials": materials[:150],
             "total": len(materials),
         }
+
+    def _material_entries(self):
+        materials = []
+        for material_id, node in self._available_materials().items():
+            materials.append({
+                "id": material_id,
+                "name": node.getMetaDataEntry("name"),
+                "type": node.getMetaDataEntry("material"),
+                "brand": node.getMetaDataEntry("brand"),
+                "color": node.getMetaDataEntry("color_name"),
+            })
+
+        materials.sort(key=lambda item: (str(item["type"]), str(item["brand"]), str(item["name"])))
+        return materials
 
     def _available_materials(self):
         material_manager = _app().getMaterialManager()
@@ -911,6 +927,106 @@ class SlicerAPI(object):
             "view": "изометрия: камера спереди-слева-сверху, смотрит на центр моделей; стол — внизу",
             "_image": image_url,
         }
+
+    @on_main
+    def review_proposal(self):
+        mode = self._mode_info()
+        mode_options = mode["options"] or list(PRINT_MODES)
+
+        return {
+            "print_mode": mode["mode"],
+            "print_modes": [{"value": option, "label": MODE_LABELS[option]} for option in mode_options],
+            "material": self._active_material(),
+            "materials": self._material_entries(),
+            "settings": self._review_settings(mode["mode"]),
+            "objects": [self._node_info(node) for node in self._object_nodes()],
+        }
+
+    def _review_settings(self, mode):
+        settings = []
+        for key in REVIEW_SETTING_KEYS:
+            if key in FIVE_AXIS_ONLY_KEYS and mode == "classic":
+                continue
+            if self._global_stack().getProperty(key, "type") is None:
+                continue
+            settings.append(self._describe(key))
+        return settings
+
+    def apply_review_changes(self, changes):
+        applied = []
+        errors = []
+
+        print_mode = changes.get("print_mode")
+        if print_mode:
+            description = "режим печати → %s" % MODE_LABELS.get(print_mode, print_mode)
+            self._try_change(description, lambda: self.set_print_mode(print_mode, USER_CHANGE_REASON), applied, errors)
+
+        material_id = changes.get("material_id")
+        if material_id:
+            description = "материал → %s" % material_id
+            self._try_change(description, lambda: self.set_material(material_id), applied, errors)
+
+        settings = changes.get("settings")
+        if settings:
+            self._apply_review_settings(settings, applied, errors)
+
+        placement = changes.get("placement")
+        if placement:
+            self._apply_review_placement(placement, applied, errors)
+
+        return {"applied": applied, "errors": errors}
+
+    @staticmethod
+    def _try_change(description, change, applied, errors):
+        try:
+            change()
+        except ToolError as error:
+            errors.append("%s: %s" % (description, error))
+            return
+        applied.append(description)
+
+    def _apply_review_settings(self, settings, applied, errors):
+        try:
+            result = self.set_settings(settings, USER_CHANGE_REASON)
+        except ToolError as error:
+            errors.append("настройки: %s" % error)
+            return
+
+        for change in result["applied"]:
+            applied.append("%s: %s → %s" % (change["label"] or change["key"], change["old"], change["new"]))
+        for error in result["errors"]:
+            errors.append("%s: %s" % (error["key"], error["error"]))
+
+    def _apply_review_placement(self, placement, applied, errors):
+        object_id = placement.get("object_id")
+
+        if "x" in placement or "y" in placement:
+            x = placement.get("x")
+            y = placement.get("y")
+            description = "положение → X=%s, Y=%s" % (x, y)
+            self._try_change(description, lambda: self.move_object(object_id, x, y), applied, errors)
+
+        scale_percent = placement.get("scale_percent")
+        if scale_percent is not None:
+            description = "масштаб → %s%%" % scale_percent
+            self._try_change(
+                description,
+                lambda: self.scale_object(object_id, percent=float(scale_percent)),
+                applied,
+                errors,
+            )
+
+        for axis in ("x", "y", "z"):
+            degrees = placement.get("rotate_" + axis)
+            if not degrees:
+                continue
+            description = "поворот вокруг %s на %s°" % (axis.upper(), degrees)
+            self._try_change(
+                description,
+                lambda axis=axis, degrees=degrees: self.rotate_object(axis, float(degrees), object_id),
+                applied,
+                errors,
+            )
 
     def _ensure_backend(self):
         backend = _app().getBackend()

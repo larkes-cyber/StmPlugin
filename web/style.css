@@ -484,6 +484,58 @@ pre {
   background: repeating-conic-gradient(var(--code) 0% 25%, transparent 0% 50%) 0 0 / 16px 16px;
 }
 
+.card.review {
+  border-left: 3px solid var(--accent);
+}
+
+.card.review.closed {
+  opacity: .75;
+}
+
+.review-form fieldset {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 6px 12px;
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.review-form legend {
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.review-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.review-form input,
+.review-form select,
+.review-form textarea {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.review-comment {
+  margin: 8px 0;
+}
+
+.review-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .slice-bar {
   display: flex;
   align-items: center;

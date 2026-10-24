@@ -1,13 +1,25 @@
 import threading
 import time
+import uuid
+
+from .log import log_exception
 
 
 class EventBus(object):
     def __init__(self, max_events=3000):
+        self.session = uuid.uuid4().hex[:8]
         self._events = []
         self._last_seq = 0
         self._max_events = max_events
-        self._condition = threading.Condition()
+        self._condition = threading.Condition(threading.RLock())
+        self._router = None
+
+    @property
+    def lock(self):
+        return self._condition
+
+    def set_router(self, router):
+        self._router = router
 
     def emit(self, event_type, **data):
         with self._condition:
@@ -18,6 +30,7 @@ class EventBus(object):
                 "time": time.time(),
             }
             event.update(data)
+            self._route(event)
             self._events.append(event)
 
             overflow = len(self._events) - self._max_events
@@ -26,6 +39,14 @@ class EventBus(object):
 
             self._condition.notify_all()
         return event
+
+    def _route(self, event):
+        if self._router is None:
+            return
+        try:
+            self._router(event)
+        except Exception:
+            log_exception("event router failed for %s" % event.get("type"))
 
     def since(self, seq, timeout=0.0):
         deadline = time.time() + timeout
@@ -43,8 +64,3 @@ class EventBus(object):
     def last_seq(self):
         with self._condition:
             return self._last_seq
-
-    def clear(self):
-        with self._condition:
-            self._events = []
-        return self.emit("reset")

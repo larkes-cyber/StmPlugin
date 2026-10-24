@@ -163,13 +163,33 @@ MODEL_NAME = string_param("Имя модели для папки results/<model_
 PRINT_MODES = ["classic", "cylindrical", "cylindrical_full"]
 
 
-def build_registry(slicer, events=None):
+def build_registry(slicer, events=None, review=None):
     registry = ToolRegistry(events)
     _add_settings_tools(registry, slicer)
     _add_model_tools(registry, slicer)
     _add_analysis_tools(registry, slicer)
+    if review is not None:
+        _add_review_tools(registry, review)
     _add_slicing_tools(registry, slicer)
     return registry
+
+
+def _add_review_tools(registry, review):
+    registry.add(
+        name="request_user_review",
+        description=(
+            "Показать пользователю подобранные параметры и дождаться его подтверждения. Пользователь может "
+            "изменить режим 3D/5D, материал, высоту слоя, заполнение, скорость, температуры, положение, масштаб "
+            "и ориентацию модели. Изменения применяются автоматически и возвращаются в ответе. "
+            "Вызывай один раз перед слайсингом, когда все параметры подобраны."
+        ),
+        function=review.request,
+        properties={
+            "summary": string_param("Кратко: что подобрано и почему (покажется пользователю)"),
+        },
+        required=["summary"],
+        group="review",
+    )
 
 
 def _add_settings_tools(registry, slicer):

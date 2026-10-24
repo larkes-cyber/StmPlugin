@@ -6,10 +6,7 @@ import tempfile
 import time
 from urllib.parse import parse_qs, urlparse
 
-from ..ai import LLMClient
-from ..chats import ChatNotFound
-from ..core import Logger, config
-from ..documents import DOC_EXT, extract_text
+from ..ai import DOC_EXT, LLMClient, extract_text
 
 UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "ste_ai_uploads")
 IMAGE_EXT = (".png", ".jpg", ".jpeg")
@@ -96,16 +93,6 @@ def handle_get_system_prompt(ctx, handler, query):
     handler.send_json(ctx.system_prompt.state())
 
 
-def handle_mcp_get(ctx, handler, query):
-    handler.send_json(
-        {
-            "name": "STE Slicer AI Assistant",
-            "version": ctx.config.version,
-            "endpoint": "/mcp",
-        }
-    )
-
-
 def handle_post_message(ctx, handler, body):
     text = (body.get("text") or "").strip()
     raw_attachments = body.get("attachments") or []
@@ -187,11 +174,6 @@ def handle_post_chats_delete(ctx, handler, body):
     handler.send_json(ctx.chats.delete(chat_id))
 
 
-def handle_mcp_post(ctx, handler, body):
-    result = ctx.mcp.handle_json(body)
-    handler.send_json(result)
-
-
 ROUTES_GET = {
     "/api/events": handle_get_events,
     "/api/config": handle_get_config,
@@ -199,7 +181,6 @@ ROUTES_GET = {
     "/api/chats": handle_get_chats,
     "/api/chat": handle_get_chat,
     "/api/system_prompt": handle_get_system_prompt,
-    "/mcp": handle_mcp_get,
 }
 
 ROUTES_POST = {
@@ -214,5 +195,4 @@ ROUTES_POST = {
     "/api/chats/select": handle_post_chats_select,
     "/api/chats/rename": handle_post_chats_rename,
     "/api/chats/delete": handle_post_chats_delete,
-    "/mcp": handle_mcp_post,
 }

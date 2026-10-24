@@ -1,14 +1,10 @@
 import os
-
 from UM.Resources import Resources
-from .core import config as default_config
 
-from .agent import Agent
-from .ai import LLMClient, PromptManager, build_registry
+from .ai import LLMClient, PromptManager, ReviewGate, build_registry
 from .chats import ChatManager
-from .core import EventBus
-from .mcp import MCPServer
-from .review import ReviewGate
+from .core import EventBus, config as default_config
+from .runner import AgentRunner
 from .server import start_server
 from .slicer import SlicerAPI
 
@@ -18,9 +14,14 @@ def _default_prompt_path():
 
 
 class Context(object):
+    """
+    Главный узел сборки зависимостей (IoC контейнер) плагина.
+    Инициализирует шину, настройки, слайсер, инструменты, сервер и воркер агента.
+    """
+
     def __init__(self, config=None, slicer_factory=SlicerAPI, llm=None, prompt_path=None, chats_dir=None):
-        prompt_path = prompt_path or _default_prompt_path()
         self.config = config or default_config
+        prompt_path = prompt_path or _default_prompt_path()
 
         if chats_dir is None:
             chats_folder_name = self.config.get("chats_dir_name", "ai_assistant_chats")
@@ -32,9 +33,8 @@ class Context(object):
         self.slicer = slicer_factory(self.events, self.config)
         self.review = ReviewGate(self.events, self.slicer)
         self.registry = build_registry(self.slicer, self.events, self.review)
-        self.mcp = MCPServer(self.registry)
         self.llm = llm or LLMClient(self.config)
-        self.agent = Agent(self.config, self.registry, self.events, self.llm, self.system_prompt, self.chats)
+        self.agent = AgentRunner(self.config, self.registry, self.events, self.llm, self.system_prompt, self.chats)
         self.server = None
 
     def start(self):
@@ -44,7 +44,6 @@ class Context(object):
         return self
 
     def stop(self):
-        self.chats.flush()
         if self.server is None:
             return
         self.server.shutdown()

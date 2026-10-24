@@ -1,7 +1,7 @@
 import threading
 
-from .core import Logger
-from .ai import ToolError
+from ..core import Logger
+from .tools import ToolError
 
 REVIEW_TIMEOUT = 30 * 60
 

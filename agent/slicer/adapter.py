@@ -16,12 +16,19 @@ def _app():
 
 
 class SlicerAPI(object):
+    """
+    Главный фасад для взаимодействия с ядром Uranium и CuraEngine.
+    Защищён мьютексом _slicer_lock от Data Race при обращении из разных потоков и чатов.
+    """
+
     def __init__(self, events, config_obj=None):
         self._events = events
         self._config = config_obj or config
 
+        # Тот самый мьютекс защиты сцены и настроек от Data Race:
         self._slicer_lock = threading.Lock()
 
+        # Подсистемы
         self.scene = SlicerScene(events)
         self.settings = SlicerSettings(events)
         self.exporter = SlicerExporter(events)
@@ -40,6 +47,7 @@ class SlicerAPI(object):
     def lock(self):
         return self._slicer_lock
 
+    # 1. Методы сцены
     def load_model(self, path):
         with self._slicer_lock:
             return self.scene.load_model(path)
@@ -76,6 +84,7 @@ class SlicerAPI(object):
         with self._slicer_lock:
             return self.scene.get_scene_snapshot(size)
 
+    # 2. Методы настроек и профилей
     def get_state(self):
         with self._slicer_lock:
             g_stack = self.settings.global_stack()
@@ -112,9 +121,48 @@ class SlicerAPI(object):
             return self.settings.set_print_mode(mode, reason)
 
     def apply_chat_state(self, state):
+        """Восстановление настроек конкретного чата под мьютексом."""
         with self._slicer_lock:
             self.settings.apply_chat_state(state)
 
+
+    def list_quality_profiles(self):
+        with self._slicer_lock:
+            return self.settings.list_quality_profiles()
+
+    def set_quality_profile(self, profile_id):
+        with self._slicer_lock:
+            return self.settings.set_quality_profile(profile_id)
+
+    def list_materials(self):
+        with self._slicer_lock:
+            return self.settings.list_materials()
+
+    def set_material(self, material_name):
+        with self._slicer_lock:
+            return self.settings.set_material(material_name)
+
+    def save_profile(self, name):
+        with self._slicer_lock:
+            return self.settings.save_profile(name)
+
+    def arrange_all(self):
+        with self._slicer_lock:
+            return self.scene.arrange_all()
+
+    def apply_orientation(self, object_id=None, down_vector=None):
+        with self._slicer_lock:
+            return self.scene.apply_orientation(object_id, down_vector)
+
+    def suggest_orientations(self, object_id=None, support_angle=50.0):
+        with self._slicer_lock:
+            from .geometry import suggest_orientations
+            node = self.scene.find_node(object_id)
+            mesh = node.getMeshData()
+            if mesh is None:
+                raise ToolError("У объекта нет полигональной сетки")
+            return suggest_orientations(mesh, support_angle=support_angle)
+    # 3. Управление слайсингом через Backend
     def start_slicing(self, wait=True, timeout=None):
         with self._slicer_lock:
             slice_timeout = float(timeout or self._config.get("slice_timeout", 300.0))
@@ -131,10 +179,7 @@ class SlicerAPI(object):
                     Logger.log("i", "Слайсинг завершён успешно: %s", result)
                     return result
                 if state in ("error", "disabled"):
-                    raise ToolError(
-                        "Слайсинг не выполнен: статус '%s'. Проверьте положение модели на столе"
-                        % state
-                    )
+                    raise ToolError("Слайсинг не выполнен: статус '%s'. Проверьте положение модели на столе" % state)
 
             raise ToolError("Слайсинг не завершился за %d с" % int(slice_timeout))
 
@@ -150,6 +195,7 @@ class SlicerAPI(object):
             raise ToolError("Нет готового результата — запустите start_slicing")
         return run_on_main(self._result_dict)
 
+    # 4. Экспорт через Uranium
     def export_gcode(self, path=None, model_name=None):
         with self._slicer_lock:
             if self._slice["state"] != "done":
@@ -173,6 +219,16 @@ class SlicerAPI(object):
                 res["project_error"] = str(e)
             return res
 
+    def analyze_geometry(self, object_id=None):
+        with self._slicer_lock:
+            from .geometry import analyze
+            node = self.scene.find_node(object_id)
+            mesh = node.getMeshData()
+            if mesh is None:
+                raise ToolError("У объекта нет полигональной сетки")
+            return analyze(mesh)
+
+    # Внутренние методы оркестрации нарезки
     def _ensure_backend(self):
         if self._backend is None:
             self._backend = _app().getBackend()

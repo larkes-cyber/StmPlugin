@@ -270,6 +270,28 @@ class SlicerScene(object):
         self._events.emit("scene_changed", {"action": "delete", "objects": [info]})
         return {"deleted": info}
 
+
+    def arrange_all(self):
+        run_on_main(_app().arrangeAll)
+        time.sleep(1.0)
+        res = self.list_objects()
+        self._events.emit("scene_changed", {"action": "arrange", "objects": res["objects"]})
+        return res
+
+    @on_main
+    def apply_orientation(self, object_id=None, down_vector=None):
+        if not down_vector or len(down_vector) != 3:
+            raise ToolError("down_vector должен быть списком из 3 чисел")
+        from .geometry import rotation_to_down, plate_to_scene_vector
+        axis, angle = rotation_to_down(down_vector)
+        node = self.find_node(object_id)
+        box = node.getBoundingBox()
+        rot = Quaternion.fromAngleAxis(math.radians(angle), Vector(*plate_to_scene_vector(axis)))
+        RotateOperation(node, rot, rotate_around_point=box.center).push()
+        GravityOperation(node).push()
+        info = self.node_info(node)
+        self._events.emit("scene_changed", {"action": "orient", "objects": [info]})
+        return {"object": info, "angle": round(angle, 1)}
     def get_scene_snapshot(self, size=DEFAULT_SNAPSHOT_SIZE):
         size = max(128, min(int(size or DEFAULT_SNAPSHOT_SIZE), 1024))
         png_data = run_on_main(lambda: self._snapshot_png(size))

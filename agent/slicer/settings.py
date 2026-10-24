@@ -188,6 +188,111 @@ class SlicerSettings(object):
         )
         return {"reset": reset}
 
+
+    @on_main
+    def list_quality_profiles(self):
+        g_stack = self.global_stack()
+        quality_manager = _app().getQualityManager()
+        groups = quality_manager.getQualityGroups(g_stack) or {}
+
+        quality_profiles = []
+        for quality_type in sorted(groups.keys()):
+            group = groups[quality_type]
+            quality_profiles.append({
+                "quality_type": quality_type,
+                "name": group.name,
+                "available": bool(group.is_available),
+            })
+
+        custom_profiles = []
+        for group in quality_manager.getQualityChangesGroups(g_stack) or []:
+            custom_profiles.append({"name": group.name})
+
+        return {
+            "active": self._active_quality(),
+            "quality": quality_profiles,
+            "custom": custom_profiles,
+        }
+
+    @on_main
+    def set_quality_profile(self, name):
+        g_stack = self.global_stack()
+        quality_manager = _app().getQualityManager()
+        machine_manager = _app().getMachineManager()
+        groups = quality_manager.getQualityGroups(g_stack) or {}
+
+        target_type = None
+        for quality_type, group in groups.items():
+            if name in (quality_type, group.name):
+                target_type = quality_type
+
+        if target_type is not None:
+            if not groups[target_type].is_available:
+                raise ToolError("Профиль %s недоступен для текущего материала/сопла" % name)
+            machine_manager.setQualityGroupByQualityType(target_type)
+        else:
+            custom_group = None
+            for group in quality_manager.getQualityChangesGroups(g_stack) or []:
+                if group.name == name:
+                    custom_group = group
+                    break
+            if custom_group is None:
+                raise ToolError("Профиль '%s' не найден" % name)
+            machine_manager.setQualityChangesGroup(custom_group)
+
+        active = self._active_quality()
+        self._events.emit("profile_changed", {"what": "quality", "value": active})
+        return {"active": active}
+
+    @on_main
+    def list_materials(self, query=None):
+        query = (query or "").lower()
+        materials = []
+        material_manager = _app().getMaterialManager()
+        nodes = material_manager.getAvailableMaterialsForMachineExtruder(self.global_stack(), self.extruder_stack()) or {}
+        for material_id, node in nodes.items():
+            entry = {
+                "id": material_id,
+                "name": node.getMetaDataEntry("name"),
+                "type": node.getMetaDataEntry("material"),
+                "brand": node.getMetaDataEntry("brand"),
+                "color": node.getMetaDataEntry("color_name"),
+            }
+            if query and query not in (" ".join(str(v) for v in entry.values()).lower()):
+                continue
+            materials.append(entry)
+
+        return {
+            "active": self._active_material(),
+            "materials": materials[:150],
+            "total": len(materials),
+        }
+
+    @on_main
+    def set_material(self, material_id):
+        e_stack = self.extruder_stack()
+        if e_stack is None:
+            raise ToolError("Нет активного экструдера")
+        pos = str(e_stack.getMetaDataEntry("position") or "0")
+        _app().getMachineManager().setMaterialById(pos, material_id)
+        active = self._active_material()
+        self._events.emit("profile_changed", {"what": "material", "value": active})
+        return {"active": active}
+
+    @on_main
+    def save_profile(self, name):
+        _app().getQualityManager().createQualityChanges(name)
+        return {"saved": name}
+
+    def _active_quality(self):
+        g_stack = self.global_stack()
+        q = g_stack.quality.getMetaDataEntry("quality_type") if g_stack and hasattr(g_stack, "quality") else None
+        return {"quality_type": q}
+
+    def _active_material(self):
+        e_stack = self.extruder_stack()
+        m = e_stack.material.getMetaDataEntry("name") if e_stack and hasattr(e_stack, "material") else None
+        return {"name": m}
     @on_main
     def get_print_mode(self):
         return self._mode_info()

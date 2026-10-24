@@ -86,6 +86,7 @@ SYSTEM_PROMPT = """Ты — ИИ-технолог аддитивного про�
 материала, пути к сохранённым файлам (если сохранял) и предупреждения (если есть).
 """
 
+
 class PromptManager(object):
     def __init__(self, path):
         self._path = path

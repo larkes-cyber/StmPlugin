@@ -19,6 +19,9 @@ DEFAULT_SETTINGS = {
     "verify_ssl": True,
     "server_addr": "127.0.0.1:8765",
     "main_thread_timeout": 120.0,
+    "chats_dir_name": "ai_assistant_chats",
+    "chats_save_delay": 2.0,
+    "chats_max_events": 3000,
     "output_dir": os.path.join(os.path.expanduser("~"), "Documents", "STE_AI_results"),
 }
 

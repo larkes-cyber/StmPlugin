@@ -9,7 +9,15 @@ class ToolError(Exception):
 
 
 class Tool(object):
-    def __init__(self, name, description, function, properties=None, required=None, group="general"):
+    def __init__(
+        self,
+        name,
+        description,
+        function,
+        properties=None,
+        required=None,
+        group="general",
+    ):
         self.name = name
         self.description = description
         self.function = function
@@ -38,7 +46,15 @@ class ToolRegistry(object):
         self._call_counter = 0
         self._lock = threading.Lock()
 
-    def add(self, name, description, function, properties=None, required=None, group="general"):
+    def add(
+        self,
+        name,
+        description,
+        function,
+        properties=None,
+        required=None,
+        group="general",
+    ):
         tool = Tool(name, description, function, properties, required, group)
         self._tools.append(tool)
         self._tools_by_name[name] = tool
@@ -53,24 +69,28 @@ class ToolRegistry(object):
     def openai_tools(self):
         result = []
         for tool in self._tools:
-            result.append({
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.schema(),
-                },
-            })
+            result.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.schema(),
+                    },
+                }
+            )
         return result
 
     def mcp_tools(self):
         result = []
         for tool in self._tools:
-            result.append({
-                "name": tool.name,
-                "description": tool.description,
-                "inputSchema": tool.schema(),
-            })
+            result.append(
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "inputSchema": tool.schema(),
+                }
+            )
         return result
 
     def call(self, name, args=None, source="agent", call_id=None):
@@ -78,7 +98,9 @@ class ToolRegistry(object):
         arguments = args if args is not None else {}
 
         Logger.log("d", "tool → %s [%s, %s] args=%s", name, source, call_id, arguments)
-        self._emit("tool_call", call_id=call_id, name=name, args=arguments, source=source)
+        self._emit(
+            "tool_call", call_id=call_id, name=name, args=arguments, source=source
+        )
 
         started_at = time.time()
         outcome = self._execute(name, arguments)
@@ -86,9 +108,13 @@ class ToolRegistry(object):
 
         result_for_chat = _hide_image(outcome.get("result"))
         if outcome["ok"]:
-            Logger.log("d", "tool ← %s ok %.2fs result=%s", name, duration, result_for_chat)
+            Logger.log(
+                "d", "tool ← %s ok %.2fs result=%s", name, duration, result_for_chat
+            )
         else:
-            Logger.log("w", "tool ← %s FAILED %.2fs: %s", name, duration, outcome.get("error"))
+            Logger.log(
+                "w", "tool ← %s FAILED %.2fs: %s", name, duration, outcome.get("error")
+            )
 
         self._emit(
             "tool_result",
@@ -119,9 +145,14 @@ class ToolRegistry(object):
 
         missing = [key for key in tool.required if key not in arguments]
         if missing:
-            return {"ok": False, "error": "Не хватает аргументов: %s" % ", ".join(missing)}
+            return {
+                "ok": False,
+                "error": "Не хватает аргументов: %s" % ", ".join(missing),
+            }
 
-        known_arguments = {key: value for key, value in arguments.items() if key in tool.properties}
+        known_arguments = {
+            key: value for key, value in arguments.items() if key in tool.properties
+        }
         try:
             return {"ok": True, "result": tool.function(**known_arguments)}
         except ToolError as error:
@@ -158,8 +189,12 @@ def string_list_param(description):
     return {"type": "array", "items": {"type": "string"}, "description": description}
 
 
-OBJECT_ID = string_param("ID объекта из list_objects (obj1, obj2…). Можно не указывать, если в сцене один объект.")
-MODEL_NAME = string_param("Имя модели для папки results/<model_name>/ (обычно имя файла без расширения)")
+OBJECT_ID = string_param(
+    "ID объекта из list_objects (obj1, obj2…). Можно не указывать, если в сцене один объект."
+)
+MODEL_NAME = string_param(
+    "Имя модели для папки results/<model_name>/ (обычно имя файла без расширения)"
+)
 PRINT_MODES = ["classic", "cylindrical", "cylindrical_full"]
 
 
@@ -185,7 +220,9 @@ def _add_review_tools(registry, review):
         ),
         function=review.request,
         properties={
-            "summary": string_param("Кратко: что подобрано и почему (покажется пользователю)"),
+            "summary": string_param(
+                "Кратко: что подобрано и почему (покажется пользователю)"
+            ),
         },
         required=["summary"],
         group="review",
@@ -210,7 +247,9 @@ def _add_settings_tools(registry, slicer):
         ),
         function=slicer.get_settings,
         properties={
-            "keys": string_list_param("Ключи настроек, например ['layer_height','infill_sparse_density']"),
+            "keys": string_list_param(
+                "Ключи настроек, например ['layer_height','infill_sparse_density']"
+            ),
         },
         required=["keys"],
         group="settings",
@@ -239,10 +278,12 @@ def _add_settings_tools(registry, slicer):
         properties={
             "changes": {
                 "type": "object",
-                "description": "Словарь ключ → значение, например {\"wall_line_count\": 4}",
+                "description": 'Словарь ключ → значение, например {"wall_line_count": 4}',
                 "additionalProperties": True,
             },
-            "reason": string_param("Почему меняются эти настройки (покажется пользователю)"),
+            "reason": string_param(
+                "Почему меняются эти настройки (покажется пользователю)"
+            ),
         },
         required=["changes", "reason"],
         group="settings",
@@ -270,7 +311,9 @@ def _add_settings_tools(registry, slicer):
         description="Выбрать профиль качества по quality_type или имени пользовательского профиля.",
         function=slicer.set_quality_profile,
         properties={
-            "name": string_param("quality_type или имя профиля из list_quality_profiles"),
+            "name": string_param(
+                "quality_type или имя профиля из list_quality_profiles"
+            ),
         },
         required=["name"],
         group="settings",
@@ -426,7 +469,9 @@ def _add_analysis_tools(registry, slicer):
         function=slicer.analyze_geometry,
         properties={
             "object_id": OBJECT_ID,
-            "support_angle": number_param("Угол нависания для поддержек, ° (по умолчанию из настроек)"),
+            "support_angle": number_param(
+                "Угол нависания для поддержек, ° (по умолчанию из настроек)"
+            ),
         },
         group="analysis",
     )
@@ -453,8 +498,14 @@ def _add_analysis_tools(registry, slicer):
         function=slicer.apply_orientation,
         properties={
             "object_id": OBJECT_ID,
-            "rank": integer_param("Номер варианта из suggest_orientations (1 — лучший)"),
-            "down": {"type": "array", "items": {"type": "number"}, "description": "Вектор [x,y,z]"},
+            "rank": integer_param(
+                "Номер варианта из suggest_orientations (1 — лучший)"
+            ),
+            "down": {
+                "type": "array",
+                "items": {"type": "number"},
+                "description": "Вектор [x,y,z]",
+            },
         },
         group="analysis",
     )
@@ -466,7 +517,9 @@ def _add_analysis_tools(registry, slicer):
         ),
         function=slicer.get_scene_snapshot,
         properties={
-            "size": integer_param("Размер снимка в пикселях, 128–1024 (по умолчанию 512)"),
+            "size": integer_param(
+                "Размер снимка в пикселях, 128–1024 (по умолчанию 512)"
+            ),
         },
         group="analysis",
     )

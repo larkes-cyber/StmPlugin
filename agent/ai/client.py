@@ -7,14 +7,10 @@ from ..core import Logger
 
 
 class LLMError(Exception):
-    """Базовое исключение при ошибке общения с языковой моделью."""
-
     pass
 
 
 class LLMClient(object):
-    """Клиент для общения с OpenAI-совместимыми API через стандартную библиотеку urllib."""
-
     def __init__(self, config):
         self.config = config
 
@@ -26,7 +22,9 @@ class LLMClient(object):
         verify_ssl = bool(self.config.get("verify_ssl", True))
 
         if not base_url or not model:
-            raise LLMError("Не заданы параметры подключения (base_url или model) в настройках")
+            raise LLMError(
+                "Не заданы параметры подключения (base_url или model) в настройках"
+            )
 
         endpoint = base_url + "/chat/completions"
         payload = {
@@ -46,7 +44,9 @@ class LLMClient(object):
             headers["Authorization"] = "Bearer " + api_key
 
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
+        req = urllib.request.Request(
+            endpoint, data=data, headers=headers, method="POST"
+        )
 
         ssl_ctx = None
         if not verify_ssl:

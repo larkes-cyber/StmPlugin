@@ -22,15 +22,18 @@ class EventBus(object):
 
         with self._lock:
             self._seq += 1
+            seq_id = self._seq
             event = {
-                "id": self._seq,
-                "seq": self._seq,
+                "id": seq_id,
+                "seq": seq_id,
                 "type": event_type,
                 "chat_id": chat_id,
                 "data": data,
                 "timestamp": time.time(),
             }
-            event.update(data)
+            for k, v in data.items():
+                if k not in ("id", "seq"):
+                    event[k] = v
             self._events.append(event)
 
             if len(self._events) > self._max_history:
@@ -40,13 +43,23 @@ class EventBus(object):
             return event
 
     def get_events(self, since_id=0, timeout=0.0, chat_id=None):
+        try:
+            target_since = int(since_id or 0)
+        except (ValueError, TypeError):
+            target_since = 0
+
         deadline = time.time() + float(timeout) if timeout > 0 else 0.0
 
         with self._lock:
             while True:
-                events = [e for e in self._events if e["id"] > since_id]
+                events = []
+                for e in self._events:
+                    eid = e.get("seq") if isinstance(e.get("seq"), int) else e.get("id")
+                    if isinstance(eid, int) and eid > target_since:
+                        events.append(e)
+
                 if chat_id:
-                    events = [e for e in events if e["chat_id"] == chat_id]
+                    events = [e for e in events if e.get("chat_id") == chat_id]
 
                 if events or timeout <= 0:
                     return events

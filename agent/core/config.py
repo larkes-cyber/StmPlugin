@@ -11,7 +11,7 @@ PLUGIN_DIR = os.path.dirname(
 )
 PREF_PREFIX = "ai_assistant/"
 
-DEFAULT_SETTINGS: Dict[str, Any] = {
+DEFAULT_SETTINGS = {
     "base_url": "",
     "api_key": "",
     "model": "",
@@ -52,12 +52,12 @@ class Config(object):
             with open(manifest_path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
-            self._logger.log("w", f"Не удалось прочитать plugin.json ({e})")
+            self._logger.log("w", "Не удалось прочитать plugin.json (%s)", e)
             return {}
 
     def get(self, key: str, default: Any = None) -> Any:
         if key not in DEFAULT_SETTINGS:
-            self._logger.log("w", f"Запрошен неизвестный параметр конфигурации '{key}'")
+            self._logger.log("w", "Запрошен неизвестный параметр конфигурации '%s'", key)
             return default
 
         expected_default = DEFAULT_SETTINGS[key]
@@ -78,7 +78,10 @@ class Config(object):
             except (ValueError, TypeError):
                 self._logger.log(
                     "w",
-                    f"Повреждённое значение для '{key}': {raw_val}. Взят default: {expected_default}",
+                    "Повреждённое значение для '%s': %s. Взят default: %s",
+                    key,
+                    raw_val,
+                    expected_default,
                 )
                 return expected_default
 
@@ -87,7 +90,7 @@ class Config(object):
     def set(self, key: str, value: Any) -> None:
         if key not in DEFAULT_SETTINGS:
             self._logger.log(
-                "w", f"Попытка записать неизвестный параметр конфигурации '{key}'"
+                "w", "Попытка записать неизвестный параметр конфигурации '%s'", key
             )
             return
 

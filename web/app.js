@@ -925,9 +925,60 @@
     element("mcp-url").textContent = config.mcp_url;
     toolCount.textContent = `Инструментов: ${(config.tools || []).length} · плагин v${config.plugin_version || "?"}`;
     toolCount.title = config.plugin_dir || "";
+    element("prompt-kind").textContent = promptKindText(config.system_prompt_custom);
 
     if (!config.llm_ready) {
       openSettings();
+    }
+  }
+
+  function promptKindText(isCustom) {
+    return isCustom ? "Используется свой промпт" : "Используется стандартный промпт";
+  }
+
+  function showPromptState(state) {
+    const form = element("prompt-form");
+    form.text.value = state.text;
+    element("prompt-info").textContent =
+      `${promptKindText(state.is_custom)}. Изменения действуют со следующего запроса к модели. Файл: ${state.path}`;
+    element("prompt-kind").textContent = promptKindText(state.is_custom);
+  }
+
+  function showPromptMessage(text, isError) {
+    const className = isError ? "msg-err" : "msg-ok";
+    element("prompt-msg").innerHTML = `<span class="${className}">${escapeHtml(text)}</span>`;
+  }
+
+  async function openPromptEditor() {
+    try {
+      showPromptState(await api("/api/system_prompt"));
+      element("prompt-msg").textContent = "";
+      element("prompt-dialog").showModal();
+    } catch (error) {
+      appendToChat(createDiv("msg error", "⚠ " + escapeHtml(error.message)));
+    }
+  }
+
+  async function savePrompt(event) {
+    event.preventDefault();
+    try {
+      const state = await api("/api/system_prompt", { text: element("prompt-form").text.value });
+      showPromptState(state);
+      showPromptMessage(state.is_custom ? "Свой промпт сохранён" : "Совпадает со стандартным — используется стандартный", false);
+    } catch (error) {
+      showPromptMessage(error.message, true);
+    }
+  }
+
+  async function resetPrompt() {
+    if (!confirm("Вернуть стандартный промпт? Ваш промпт будет удалён.")) {
+      return;
+    }
+    try {
+      showPromptState(await api("/api/system_prompt/reset", {}));
+      showPromptMessage("Возвращён стандартный промпт", false);
+    } catch (error) {
+      showPromptMessage(error.message, true);
     }
   }
 
@@ -1063,6 +1114,11 @@
     element("btn-shot").addEventListener("click", takeScreenshot);
     element("btn-cancel").addEventListener("click", () => element("settings").close());
     element("btn-test").addEventListener("click", testConnection);
+    element("btn-prompt").addEventListener("click", openPromptEditor);
+    element("btn-prompt-side").addEventListener("click", openPromptEditor);
+    element("btn-prompt-cancel").addEventListener("click", () => element("prompt-dialog").close());
+    element("btn-prompt-reset").addEventListener("click", resetPrompt);
+    element("prompt-form").addEventListener("submit", savePrompt);
     element("settings-form").addEventListener("submit", submitSettings);
 
     bindExamples();

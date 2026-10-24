@@ -24,7 +24,7 @@ from steslicer.Snapshot import Snapshot
 
 from . import geometry
 from .core import Logger
-from .mainthread import on_main, run_on_main
+from .core import on_main, run_on_main
 from .tools import ToolError
 
 PRINT_MODE_KEY = "printing_mode"

@@ -1,6 +1,6 @@
 import threading
 
-from .log import log
+from .core import Logger
 from .tools import ToolError
 
 REVIEW_TIMEOUT = 30 * 60
@@ -32,25 +32,25 @@ class ReviewGate(object):
         pending = self._open_review()
         review_id = pending["id"]
 
-        log("i", "review %s requested", review_id)
+        Logger.log("i", "review %s requested", review_id)
         self._events.emit("review_requested", review_id=review_id, summary=summary, proposal=proposal)
 
         answered = pending["answered"].wait(self._timeout)
         self._close_review(pending)
 
         if not answered:
-            log("w", "review %s timed out", review_id)
+            Logger.log("w", "review %s timed out", review_id)
             self._events.emit("review_closed", review_id=review_id, status="timeout")
             raise ToolError("Пользователь не ответил за %d мин" % (self._timeout // 60))
 
         answer = pending["answer"]
         if answer["cancelled"]:
-            log("i", "review %s cancelled", review_id)
+            Logger.log("i", "review %s cancelled", review_id)
             self._events.emit("review_closed", review_id=review_id, status="cancelled")
             raise ToolError("Пользователь остановил проверку параметров")
 
         result = self._slicer.apply_review_changes(answer["changes"])
-        log("i", "review %s approved: %s", review_id, result)
+        Logger.log("i", "review %s approved: %s", review_id, result)
         self._events.emit(
             "review_closed",
             review_id=review_id,

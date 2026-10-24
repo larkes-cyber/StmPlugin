@@ -23,8 +23,8 @@ from steslicer.SteSlicerApplication import SteSlicerApplication
 from steslicer.Snapshot import Snapshot
 
 from . import geometry
-from .log import log, log_exception, shorten
-from .mainthread import on_main, run_on_main
+from .core import Logger
+from .core import on_main, run_on_main
 from .tools import ToolError
 
 PRINT_MODE_KEY = "printing_mode"
@@ -275,7 +275,7 @@ class SlicerAPI(object):
                 stack.userChanges.setProperty(key, "value", new_value)
                 actual_value = stack.getProperty(key, "value")
             except ToolError as error:
-                log("w", "setting %s rejected: %s", key, error)
+                Logger.log("w", "setting %s rejected: %s", key, error)
                 errors.append({"key": key, "error": str(error)})
                 continue
 
@@ -286,7 +286,7 @@ class SlicerAPI(object):
                 "new": _jsonable(actual_value),
                 "scope": scope,
             })
-            log("d", "setting %s [%s]: %r -> %r (requested %r)", key, scope, old_value, actual_value, value)
+            Logger.log("d", "setting %s [%s]: %r -> %r (requested %r)", key, scope, old_value, actual_value, value)
         return applied, errors
 
     def _validation_errors(self):
@@ -675,16 +675,16 @@ class SlicerAPI(object):
             raise ToolError("Поддерживаются только %s" % ", ".join(MODEL_EXTENSIONS))
 
         keys_before = set(run_on_main(self._node_keys))
-        log("i", "loading model %s (%d objects in scene)", path, len(keys_before))
+        Logger.log("i", "loading model %s (%d objects in scene)", path, len(keys_before))
         run_on_main(self._read_file, path)
 
         new_keys = self._wait_for_new_objects(keys_before)
         if not new_keys:
-            log("w", "model %s did not appear in scene", path)
+            Logger.log("w", "model %s did not appear in scene", path)
             raise ToolError("Модель не появилась в сцене за %d с (проверьте файл и диалоги слайсера)" % LOAD_TIMEOUT)
 
         objects = run_on_main(self._infos_for_keys, set(new_keys))
-        log("i", "model loaded: %s", shorten(objects))
+        Logger.log("i", "model loaded: %s", objects)
         self._events.emit("scene_changed", action="load", objects=objects)
         return {"loaded": objects, "file": path}
 
@@ -919,7 +919,7 @@ class SlicerAPI(object):
         png_data = run_on_main(self._snapshot_png, size)
         image_url = "data:image/png;base64," + base64.b64encode(png_data).decode("ascii")
 
-        log("d", "scene snapshot %dx%d, %d bytes", size, size, len(png_data))
+        Logger.log("d", "scene snapshot %dx%d, %d bytes", size, size, len(png_data))
         self._events.emit("snapshot", image=image_url, caption="Снимок сцены")
         return {
             "image_attached": True,
@@ -1044,7 +1044,7 @@ class SlicerAPI(object):
 
     def _on_backend_state(self, state):
         state_name = BACKEND_STATE_NAMES.get(state, str(state))
-        log("d", "backend state: %s (raw %r, ours %s)", state_name, state, self._slice["state"])
+        Logger.log("d", "backend state: %s (raw %r, ours %s)", state_name, state, self._slice["state"])
 
         if self._slice["state"] == "idle" and state_name == "pending":
             return
@@ -1070,7 +1070,7 @@ class SlicerAPI(object):
         try:
             result = self._result_dict()
         except Exception:
-            log_exception("print information failed")
+            Logger.logException("print information failed")
             result = {}
         self._events.emit("slice_state", state="done", result=result)
 
@@ -1097,7 +1097,7 @@ class SlicerAPI(object):
         self._last_progress_emit = 0.0
 
         self._events.emit("slice_state", state="processing")
-        log("i", "start slicing via %s.forceSlice", type(backend).__name__)
+        Logger.log("i", "start slicing via %s.forceSlice", type(backend).__name__)
         backend.forceSlice()
 
     def start_slicing(self, wait=True, timeout=SLICE_TIMEOUT):
@@ -1115,7 +1115,7 @@ class SlicerAPI(object):
 
             if state == "done":
                 result = run_on_main(self._result_dict)
-                log("i", "slicing done: %s", shorten(result))
+                Logger.log("i", "slicing done: %s", result)
                 return result
 
             if state in ("error", "disabled"):
@@ -1130,14 +1130,14 @@ class SlicerAPI(object):
             if time.time() - pending_since > 5 and restarts < 2:
                 restarts += 1
                 pending_since = None
-                log("w", "backend stays pending, restarting slice (%d)", restarts)
+                Logger.log("w", "backend stays pending, restarting slice (%d)", restarts)
                 run_on_main(self._start_slice)
 
         raise ToolError("Слайсинг не завершился за %d с" % timeout)
 
     def _raise_slicing_error(self, state):
         error_keys = run_on_main(self._validation_errors)
-        log("w", "slicing failed: state=%s validation_errors=%s", state, error_keys)
+        Logger.log("w", "slicing failed: state=%s validation_errors=%s", state, error_keys)
 
         message = "Слайсинг не выполнен (%s). %s" % (state, self._slice.get("message", ""))
         if error_keys:
@@ -1211,7 +1211,7 @@ class SlicerAPI(object):
             mode = MeshWriter.OutputMode.BinaryMode
         else:
             mode = MeshWriter.OutputMode.TextMode
-        log("i", "writing %s with %s.%s", path, type(writer).__module__, writer_name)
+        Logger.log("i", "writing %s with %s.%s", path, type(writer).__module__, writer_name)
 
         outcome = {}
 
@@ -1224,7 +1224,7 @@ class SlicerAPI(object):
                     with open(path, "w", encoding="utf-8", newline="") as stream:
                         outcome["ok"] = writer.write(stream, nodes, mode)
             except Exception as error:
-                log_exception("writer %s failed" % writer_name)
+                Logger.logException("writer %s failed" % writer_name)
                 outcome["error"] = error
 
         worker = threading.Thread(target=write, name="AIAssistantWriter")
@@ -1240,7 +1240,7 @@ class SlicerAPI(object):
         if "error" in outcome:
             raise ToolError("%s: %s" % (writer_name, outcome["error"]))
 
-        log("d", "%s returned %r in %.2fs", writer_name, outcome.get("ok"), time.time() - started_at)
+        Logger.log("d", "%s returned %r in %.2fs", writer_name, outcome.get("ok"), time.time() - started_at)
         if outcome.get("ok") is False:
             information = writer.getInformation()
             details = ": " + information if information else ""
@@ -1275,7 +1275,7 @@ class SlicerAPI(object):
 
         check = check_gcode(path)
         level = "i" if check["valid"] else "w"
-        log(level, "G-code check %s: %s", path, shorten(check))
+        Logger.log(level, "G-code check %s: %s", path, check)
         self._events.emit("file_saved", kind="gcode", path=path, check=check)
         return {"path": path, "check": check}
 
@@ -1298,7 +1298,7 @@ class SlicerAPI(object):
             try:
                 result[key] = export(model_name=model_name)
             except Exception as error:
-                log("w", "export_results: %s failed: %s", key, error)
+                Logger.log("w", "export_results: %s failed: %s", key, error)
                 result["errors"].append("%s: %s" % (key, error))
 
         if "gcode" not in result and "project" not in result:

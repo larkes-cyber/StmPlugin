@@ -5,7 +5,7 @@ import threading
 import time
 import uuid
 
-from .log import log, log_exception
+from .core import Logger
 
 CHATS_DIR_NAME = "ai_assistant_chats"
 FILE_FORMAT = 1
@@ -43,7 +43,7 @@ def _history_copy(chat):
     try:
         return _json_copy(chat.messages)
     except (TypeError, ValueError):
-        log_exception("chat %s: history is not serializable" % chat.id)
+        Logger.logException("chat %s: history is not serializable" % chat.id)
         return None
 
 
@@ -235,7 +235,7 @@ class ChatManager(object):
             self._mark_dirty(chat)
             self._notify("renamed", chat_id)
             meta = self._meta(chat)
-        log("i", "chat %s renamed: %s", chat_id, title)
+        Logger.log("i", "chat %s renamed: %s", chat_id, title)
         return meta
 
     def delete(self, chat_id):
@@ -250,7 +250,7 @@ class ChatManager(object):
                     self._active_id = (self._most_recent() or self._add_chat()).id
                 self._notify("deleted", chat_id)
             self._remove_file(chat_id)
-        log("i", "chat %s deleted", chat_id)
+        Logger.log("i", "chat %s deleted", chat_id)
 
     def begin_run(self, chat_id=None, title_hint=""):
         with self._lock:
@@ -312,7 +312,7 @@ class ChatManager(object):
                 try:
                     self._write_file(chat.id, payload)
                 except OSError as error:
-                    log("w", "chat %s not saved: %s", chat.id, error)
+                    Logger.log("w", "chat %s not saved: %s", chat.id, error)
                     with self._lock:
                         chat.dirty = True
 
@@ -401,7 +401,7 @@ class ChatManager(object):
             if os.path.exists(path):
                 os.remove(path)
         except OSError as error:
-            log("w", "chat file %s not removed: %s", path, error)
+            Logger.log("w", "chat file %s not removed: %s", path, error)
 
     def _load(self):
         if self._folder is None or not os.path.isdir(self._folder):
@@ -419,8 +419,8 @@ class ChatManager(object):
                 if chat.id != chat_id:
                     raise ValueError("id в файле не совпадает с именем файла")
             except (OSError, ValueError, TypeError, AttributeError) as error:
-                log("w", "chat file %s skipped: %s", path, error)
+                Logger.log("w", "chat file %s skipped: %s", path, error)
                 continue
             self._chats[chat.id] = chat
 
-        log("i", "chats loaded: %d from %s", len(self._chats), self._folder)
+        Logger.log("i", "chats loaded: %d from %s", len(self._chats), self._folder)

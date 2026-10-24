@@ -1,11 +1,11 @@
 import os
 
 from UM.Resources import Resources
+from .core import config as default_config
 
 from .agent import Agent
 from .chats import CHATS_DIR_NAME, ChatManager
-from .config import Config
-from .events import EventBus
+from .core import EventBus
 from .llm import LLMClient
 from .mcp import MCPServer
 from .review import ReviewGate
@@ -25,7 +25,7 @@ class Context(object):
         if chats_dir is None:
             chats_dir = os.path.join(os.path.dirname(prompt_path), CHATS_DIR_NAME)
 
-        self.config = config or Config()
+        self.config = config or default_config
         self.events = EventBus()
         self.chats = ChatManager(self.events, chats_dir)
         self.system_prompt = SystemPromptStore(prompt_path)
@@ -39,7 +39,8 @@ class Context(object):
 
     def start(self):
         if self.server is None:
-            self.server = start_server(self, self.config.get("port"))
+            addr = self.config.get("server_addr", "127.0.0.1:8765")
+            self.server = start_server(self, addr=addr)
         return self
 
     def stop(self):
@@ -52,4 +53,7 @@ class Context(object):
 
     @property
     def url(self):
-        return "http://127.0.0.1:%d" % self.server.server_port
+        if self.server is None:
+            return ""
+        host, _ = self.config.get_server_binding()
+        return "http://%s:%d" % (host, self.server.server_port)

@@ -13,10 +13,10 @@ from urllib.parse import parse_qs, unquote, urlparse
 from .agent import AgentBusy
 from .chats import ChatNotFound
 from .documents import DOC_EXT, extract_text
-from .log import log, log_exception, shorten
-from .version import PLUGIN_DIR, plugin_version
+from .core import Logger
+from .core import config
 
-WEB_DIR = os.path.join(PLUGIN_DIR, "web")
+WEB_DIR = os.path.join(config.plugin_dir, "web")
 UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "ste_ai_uploads")
 MAX_BODY_BYTES = 200 * 1024 * 1024
 MAX_EVENTS_WAIT = 25.0
@@ -66,7 +66,7 @@ def _save_upload(filename, raw):
     with open(path, "wb") as upload_file:
         upload_file.write(raw)
 
-    log("d", "attachment saved: %s (%d bytes)", path, len(raw))
+    Logger.log("d", "attachment saved: %s (%d bytes)", path, len(raw))
     return path
 
 
@@ -82,7 +82,7 @@ def _collect_attachments(attachments):
 
         if extension in DOC_EXT:
             document = extract_text(filename, raw)
-            log("d", "document %s: %d chars, truncated=%s", filename, document["chars"], document["truncated"])
+            Logger.log("d", "document %s: %d chars, truncated=%s", filename, document["chars"], document["truncated"])
             documents.append(document)
         elif extension in IMAGE_EXT:
             images.append(_image_data_url(extension, raw))
@@ -116,10 +116,10 @@ def make_handler(ctx):
             path = urlparse(self.path).path
             is_api_call = path.startswith("/api/") and path != "/api/events"
             if is_api_call or path == "/mcp":
-                log("d", "HTTP %s %s -> %s", self.command, path, code)
+                Logger.log("d", "HTTP %s %s -> %s", self.command, path, code)
 
         def log_error(self, format, *args):
-            log("w", "HTTP %s: %s", self.address_string(), format % args)
+            Logger.log("w", "HTTP %s: %s", self.address_string(), format % args)
 
         def _is_local_request(self):
             host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
@@ -147,7 +147,7 @@ def make_handler(ctx):
         def _send_json(self, data, status=200):
             if status >= 400:
                 error = data.get("error") if isinstance(data, dict) else data
-                log("w", "%s %s -> %d: %s", self.command, self.path, status, error)
+                Logger.log("w", "%s %s -> %d: %s", self.command, self.path, status, error)
             body = json.dumps(data, ensure_ascii=False, default=str).encode("utf-8")
             self._send(status, body, "application/json; charset=utf-8")
 
@@ -187,7 +187,7 @@ def make_handler(ctx):
             except ChatNotFound as error:
                 self._send_json({"error": str(error)}, 404)
             except Exception as error:
-                log_exception("GET %s failed" % url.path)
+                Logger.logException("GET %s failed" % url.path)
                 self._send_json({"error": str(error)}, 500)
 
         def _get_events(self, query):
@@ -210,8 +210,8 @@ def make_handler(ctx):
             data["llm_ready"] = ctx.config.llm_ready()
             data["mcp_url"] = ctx.url + "/mcp"
             data["tools"] = ctx.registry.names()
-            data["plugin_version"] = plugin_version()
-            data["plugin_dir"] = PLUGIN_DIR
+            data["plugin_version"] = config.version
+            data["plugin_dir"] = config.plugin_dir
             data["system_prompt_custom"] = ctx.system_prompt.is_custom()
             self._send_json(data)
 
@@ -258,7 +258,7 @@ def make_handler(ctx):
             except ValueError as error:
                 self._send_json({"error": str(error)}, 400)
             except Exception as error:
-                log_exception("POST %s failed" % path)
+                Logger.logException("POST %s failed" % path)
                 self._send_json({"error": str(error)}, 500)
 
         def _route_post(self, path, body):
@@ -304,7 +304,7 @@ def make_handler(ctx):
                 self._send_json({"error": "not found"}, 404)
 
         def _post_mcp(self, body):
-            log("d", "MCP request: %s", shorten(body, 300))
+            Logger.log("d", "MCP request: %s", body)
             response = ctx.mcp.handle_raw(body)
             if response is None:
                 self._send(202, b"", "application/json")
@@ -314,12 +314,12 @@ def make_handler(ctx):
         def _post_system_prompt(self, data):
             ctx.system_prompt.save(data.get("text"))
             state = ctx.system_prompt.state()
-            log("i", "system prompt saved: custom=%s, %d chars", state["is_custom"], len(state["text"]))
+            Logger.log("i", "system prompt saved: custom=%s, %d chars", state["is_custom"], len(state["text"]))
             self._send_json(state)
 
         def _post_system_prompt_reset(self):
             ctx.system_prompt.reset()
-            log("i", "system prompt reset to default")
+            Logger.log("i", "system prompt reset to default")
             self._send_json(ctx.system_prompt.state())
 
         def _post_review(self, data):
@@ -327,7 +327,7 @@ def make_handler(ctx):
             changes = data.get("changes") or {}
             comment = data.get("comment") or ""
 
-            log("i", "review %s answered: changes=%s comment=%s", review_id, shorten(changes), shorten(comment, 200))
+            Logger.log("i", "review %s answered: changes=%s comment=%s", review_id, changes, comment)
             ctx.review.answer(review_id, changes, comment)
             self._send_json({"ok": True})
 
@@ -351,7 +351,7 @@ def make_handler(ctx):
             self._send_json({"ok": True})
 
         def _post_config(self, data):
-            log("i", "config updated: %s", _config_log_line(data))
+            Logger.log("i", "config updated: %s", _config_log_line(data))
             ctx.config.update(data)
             public_config = ctx.config.public()
             public_config["llm_ready"] = ctx.config.llm_ready()
@@ -366,17 +366,26 @@ def make_handler(ctx):
     return Handler
 
 
-def start_server(ctx, port):
+def start_server(ctx, addr="127.0.0.1:8765"):
+    if ":" in str(addr):
+        host, port_str = str(addr).rsplit(":", 1)
+        try:
+            port = int(port_str)
+        except ValueError:
+            port = 8765
+    else:
+        host, port = str(addr or "127.0.0.1"), 8765
+
     handler = make_handler(ctx)
     try:
-        server = ChatServer(("127.0.0.1", int(port or 0)), handler)
+        server = ChatServer((host, port), handler)
     except OSError:
-        log("w", "port %s is busy, using a random one", port)
-        server = ChatServer(("127.0.0.1", 0), handler)
+        Logger.log("w", "address %s:%s is busy, using random port", host, port)
+        server = ChatServer((host, 0), handler)
 
     thread = threading.Thread(target=server.serve_forever, name="AIAssistantHTTP")
     thread.daemon = True
     thread.start()
 
-    log("i", "HTTP server listening on 127.0.0.1:%d (web dir: %s)", server.server_port, WEB_DIR)
+    Logger.log("i", "HTTP server listening on %s:%d (web dir: %s)", host, server.server_port, WEB_DIR)
     return server

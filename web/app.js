@@ -757,7 +757,9 @@
     });
   }
 
-  function handleEvent(event, replaying) {
+  function handleEvent(rawEvent, replaying) {
+    const payload = rawEvent.data || {};
+    const event = Object.assign({}, payload, rawEvent);
     switch (event.type) {
       case "user":
         renderUserMessage(event);
@@ -854,7 +856,7 @@
       const events = data.events || [];
 
       events.forEach((event) => {
-        lastEventSeq = Math.max(lastEventSeq, event.seq);
+        lastEventSeq = Math.max(lastEventSeq, event.id || event.seq || 0);
         dispatchEvent(event);
       });
       syncAgentState(Boolean(data.busy), data.running_chat || null);

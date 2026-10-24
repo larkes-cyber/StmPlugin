@@ -1,3 +1,75 @@
+@font-face {
+  font-family: "Roboto";
+  src: url("fonts/roboto/roboto-100-thin.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 100;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Roboto";
+  src: url("fonts/roboto/roboto-300-light.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Roboto";
+  src: url("fonts/roboto/roboto-300-light-italic.ttf") format("truetype");
+  font-style: italic;
+  font-weight: 300;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Roboto";
+  src: url("fonts/roboto/roboto-400-regular.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Roboto";
+  src: url("fonts/roboto/roboto-400-regular-italic.ttf") format("truetype");
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Roboto";
+  src: url("fonts/roboto/roboto-500-medium.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Roboto";
+  src: url("fonts/roboto/roboto-500-medium-italic.ttf") format("truetype");
+  font-style: italic;
+  font-weight: 500;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Roboto";
+  src: url("fonts/roboto/roboto-700-bold.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Roboto";
+  src: url("fonts/roboto/roboto-700-bold-italic.ttf") format("truetype");
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+}
+
 :root {
   --bg: #f4f6f8;
   --panel: #ffffff;
@@ -5,16 +77,16 @@
   --muted: #6b7785;
   --border: #dde3ea;
 
-  --accent: #0b7fa8;
+  --accent: #0775be;
   --accent-weak: #e3f3f9;
   --user: #0b7fa8;
   --user-text: #fff;
 
-  --ok: #1f8a4c;
-  --ok-weak: #e5f5ec;
+  --ok: #b6f47a;
+  --ok-weak: #427017;
   --err: #c0392b;
   --err-weak: #fdecea;
-  --warn: #b7791f;
+  --warn: #ffc85e;
 
   --code: #f0f3f6;
   --shadow: 0 1px 2px rgba(0, 0, 0, .06);
@@ -35,13 +107,13 @@ body {
   flex-direction: column;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  font: 14px/1.5 "Roboto", "Segoe UI", Arial, sans-serif;
 }
 
 button {
   padding: 6px 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 4px;
   background: var(--panel);
   color: var(--text);
   font: inherit;
@@ -103,11 +175,29 @@ button:disabled {
 }
 
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 15px;
 }
 
 .logo {
-  color: var(--accent);
+  display: block;
+  flex-shrink: 0;
+}
+
+.settings-icon {
+  width: 13px;
+  height: 13px;
+  margin-right: 4px;
+  vertical-align: -2px;
+}
+
+.action-icon {
+  width: 16px;
+  height: 16px;
+  margin-right: 4px;
+  vertical-align: -3px;
 }
 
 .actions {
@@ -125,8 +215,8 @@ button:disabled {
 }
 
 .pill.idle {
-  background: var(--ok-weak);
-  color: var(--ok);
+  background: var(--ok);
+  color: var(--ok-weak);
 }
 
 .pill.error {
@@ -172,6 +262,17 @@ button:disabled {
   margin: 0 0 10px;
 }
 
+.new-chat .plus-icon {
+  filter: brightness(0) invert(1);
+}
+
+.plus-icon {
+  width: 16px;
+  height: 16px;
+  margin-right: 4px;
+  vertical-align: -3px;
+}
+
 .chat-list {
   margin: 0;
   padding: 0;
@@ -184,7 +285,6 @@ button:disabled {
   gap: 6px;
   padding: 7px 8px;
   border: 1px solid transparent;
-  border-radius: 8px;
   cursor: pointer;
 }
 
@@ -259,6 +359,12 @@ button:disabled {
   background: none;
   color: var(--muted);
   font-size: 12px;
+}
+
+.ci-btn img {
+  display: block;
+  width: 14px;
+  height: 14px;
 }
 
 .ci-btn:hover {
@@ -349,7 +455,7 @@ button:disabled {
   margin-top: 8px;
   padding: 6px 8px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 2px;
   font-size: 12px;
 }
 
@@ -388,7 +494,7 @@ button:disabled {
 .msg {
   max-width: 85%;
   padding: 10px 14px;
-  border-radius: 12px;
+  border-radius: 4px;
   box-shadow: var(--shadow);
   word-wrap: break-word;
 }
@@ -480,8 +586,7 @@ pre {
 .tool {
   align-self: flex-start;
   width: min(85%, 720px);
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 2px;
   background: var(--panel);
   font-size: 13px;
 }
@@ -492,6 +597,7 @@ pre {
 
 .tool.ok {
   border-left: 3px solid var(--ok);
+  background: transparent;
 }
 
 .tool.fail {
@@ -514,6 +620,13 @@ pre {
 .tool .t-icon {
   width: 18px;
   text-align: center;
+}
+
+.status-icon {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  vertical-align: middle;
 }
 
 .tool .t-name {
@@ -553,6 +666,7 @@ pre {
   font-size: 11px;
 }
 
+/* индикатор загрузки */
 .spin {
   display: inline-block;
   width: 12px;
@@ -574,7 +688,6 @@ pre {
   width: min(85%, 720px);
   padding: 8px 12px;
   border: 1px solid var(--border);
-  border-radius: 10px;
   background: var(--panel);
   font-size: 13px;
 }
@@ -582,6 +695,19 @@ pre {
 .card .c-title {
   margin-bottom: 4px;
   font-weight: 600;
+}
+
+.message-icon {
+  width: 14px;
+  height: 14px;
+  margin-right: 4px;
+  vertical-align: -2px;
+}
+
+.inline-icon {
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.15em;
 }
 
 .card.changes {
@@ -611,7 +737,7 @@ pre {
 
 .card.result {
   border-left: 3px solid var(--ok);
-  background: var(--ok-weak);
+  background: var(--ok);
 }
 
 .stats {
@@ -619,6 +745,12 @@ pre {
   flex-wrap: wrap;
   gap: 18px;
   font-size: 15px;
+}
+
+.stats-icon {
+  width: 16px;
+  height: 16px;
+  vertical-align: -3px;
 }
 
 .card.snapshot img {
@@ -747,17 +879,35 @@ pre {
   max-height: 240px;
   padding: 8px 10px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 2px;
   background: var(--bg);
   color: var(--text);
   font: inherit;
   resize: vertical;
 }
 
+.composer #btn-send {
+  align-self: center;
+}
+
 .attach {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
   padding: 6px;
-  font-size: 20px;
   cursor: pointer;
+}
+
+.attach .plus-icon {
+  display: block;
+  margin: 0;
+}
+
+.load-icon {
+  width: 20px;
+  height: 20px;
+  vertical-align: middle;
 }
 
 .hint {
@@ -814,6 +964,8 @@ pre {
 
 dialog {
   width: min(480px, 92vw);
+  max-height: 90vh;
+  overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--panel);
@@ -875,6 +1027,12 @@ dialog.prompt-dialog {
   display: flex;
   gap: 8px;
   margin-top: 12px;
+}
+
+.settings-footer {
+  margin-bottom: 12px;
+  padding-top: 8px;
+  text-align: left;
 }
 
 @media (max-width: 900px) {

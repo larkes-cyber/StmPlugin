@@ -673,7 +673,10 @@
     reviewCards = {};
   }
 
-  function handleEvent(event) {
+  function handleEvent(rawEvent) {
+    const payload = rawEvent.data || {};
+    const event = Object.assign({}, payload, rawEvent);
+
     switch (event.type) {
       case "reset":
         resetChat();
@@ -733,7 +736,7 @@
       const events = data.events || [];
 
       events.forEach((event) => {
-        lastEventSeq = Math.max(lastEventSeq, event.seq);
+        lastEventSeq = Math.max(lastEventSeq, event.id || event.seq || 0);
         handleEvent(event);
       });
       if (!data.busy && busy && events.length === 0) {

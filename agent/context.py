@@ -4,7 +4,7 @@ from UM.Resources import Resources
 from .core import config as default_config
 
 from .agent import Agent
-from .events import EventBus
+from .core import EventBus
 from .llm import LLMClient
 from .mcp import MCPServer
 from .review import ReviewGate

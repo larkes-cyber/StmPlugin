@@ -33,8 +33,8 @@ class Context(object):
 
     def start(self):
         if self.server is None:
-            host, port = self.config.get_server_binding()
-            self.server = start_server(self, host=host, port=port)
+            addr = self.config.get("server_addr", "127.0.0.1:8765")
+            self.server = start_server(self, addr=addr)
         return self
 
     def stop(self):
@@ -46,4 +46,7 @@ class Context(object):
 
     @property
     def url(self):
-        return "http://127.0.0.1:%d" % self.server.server_port
+        if self.server is None:
+            return ""
+        host, _ = self.config.get_server_binding()
+        return "http://%s:%d" % (host, self.server.server_port)

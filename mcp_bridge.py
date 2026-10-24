@@ -1,36 +1,53 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""Мост stdio ↔ HTTP для MCP-клиентов, которые умеют только stdio (например, Claude Desktop).
-
-Запуск:  python mcp_bridge.py http://127.0.0.1:8765/mcp
-Слайсер с плагином должен быть запущен. Слайсер этот файл не импортирует.
-"""
 import json
 import sys
 import urllib.request
 
-URL = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8765/mcp"
+DEFAULT_URL = "http://127.0.0.1:8765/mcp"
+REQUEST_TIMEOUT = 900
+
+
+def _post(url, line):
+    request = urllib.request.Request(
+        url,
+        data=line.encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+        return response.read().decode("utf-8")
+
+
+def _request_id(line):
+    try:
+        return json.loads(line).get("id")
+    except (ValueError, AttributeError):
+        return None
+
+
+def _error_body(request_id, error):
+    return json.dumps({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "error": {"code": -32000, "message": "Слайсер недоступен: %s" % error},
+    })
 
 
 def main():
+    url = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_URL
+
     for line in sys.stdin:
         line = line.strip()
         if not line:
             continue
-        request = urllib.request.Request(URL, data=line.encode("utf-8"),
-                                         headers={"Content-Type": "application/json",
-                                                  "Accept": "application/json"})
+
         try:
-            body = urllib.request.urlopen(request, timeout=900).read().decode("utf-8")
-        except Exception as e:
-            try:
-                msg_id = json.loads(line).get("id")
-            except Exception:
-                msg_id = None
-            if msg_id is None:
+            body = _post(url, line)
+        except Exception as error:
+            request_id = _request_id(line)
+            if request_id is None:
                 continue
-            body = json.dumps({"jsonrpc": "2.0", "id": msg_id,
-                               "error": {"code": -32000, "message": "Слайсер недоступен: %s" % e}})
+            body = _error_body(request_id, error)
+
         if body.strip():
             sys.stdout.write(body.strip() + "\n")
             sys.stdout.flush()

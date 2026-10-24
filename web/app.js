@@ -1,439 +1,829 @@
 (function () {
   "use strict";
 
-  var TOOL_LABELS = {
-    get_state: "Состояние слайсера", get_settings: "Чтение настроек", search_settings: "Поиск настроек",
-    set_settings: "Изменение настроек", reset_settings: "Сброс настроек",
-    list_quality_profiles: "Профили качества", set_quality_profile: "Выбор профиля",
-    list_materials: "Материалы", set_material: "Выбор материала", save_profile: "Сохранение профиля",
-    get_print_mode: "Режим печати", set_print_mode: "Переключение 3D/5D",
-    load_model: "Загрузка модели", list_objects: "Объекты сцены", get_object_dimensions: "Габариты",
-    move_object: "Перемещение", center_object: "Центрирование", rotate_object: "Поворот",
-    scale_object: "Масштаб", arrange_all: "Авторасстановка", delete_object: "Удаление",
-    analyze_geometry: "Анализ геометрии", suggest_orientations: "Подбор ориентации",
-    apply_orientation: "Применение ориентации", get_scene_snapshot: "Снимок сцены", start_slicing: "Слайсинг",
-    get_slicing_status: "Статус слайсинга", get_slicing_result: "Результат слайсинга",
-    export_gcode: "Экспорт G-code", save_project_3mf: "Сохранение 3MF", export_results: "Сохранение результатов"
+  const TOOL_LABELS = {
+    get_state: "Состояние слайсера",
+    get_settings: "Чтение настроек",
+    search_settings: "Поиск настроек",
+    set_settings: "Изменение настроек",
+    reset_settings: "Сброс настроек",
+    list_quality_profiles: "Профили качества",
+    set_quality_profile: "Выбор профиля",
+    list_materials: "Материалы",
+    set_material: "Выбор материала",
+    save_profile: "Сохранение профиля",
+    get_print_mode: "Режим печати",
+    set_print_mode: "Переключение 3D/5D",
+    load_model: "Загрузка модели",
+    list_objects: "Объекты сцены",
+    get_object_dimensions: "Габариты",
+    move_object: "Перемещение",
+    center_object: "Центрирование",
+    rotate_object: "Поворот",
+    scale_object: "Масштаб",
+    arrange_all: "Авторасстановка",
+    delete_object: "Удаление",
+    analyze_geometry: "Анализ геометрии",
+    suggest_orientations: "Подбор ориентации",
+    apply_orientation: "Применение ориентации",
+    get_scene_snapshot: "Снимок сцены",
+    start_slicing: "Слайсинг",
+    get_slicing_status: "Статус слайсинга",
+    get_slicing_result: "Результат слайсинга",
+    export_gcode: "Экспорт G-code",
+    save_project_3mf: "Сохранение 3MF",
+    export_results: "Сохранение результатов",
   };
-  var STATE_REFRESH_TOOLS = /^(set_|load_|move_|center_|rotate_|scale_|arrange_|delete_|apply_|reset_|start_)/;
 
-  var $ = function (id) { return document.getElementById(id); };
-  var seq = 0;
-  var toolCards = {};
-  var attachments = [];
-  var busy = false;
-  var stateTimer = null;
-  var WELCOME_HTML = $("messages").innerHTML;
+  const STATE_CHANGING_TOOLS = /^(set_|load_|move_|center_|rotate_|scale_|arrange_|delete_|apply_|reset_|start_)/;
+  const ALLOWED_EXTENSIONS = ["stl", "obj", "3mf", "jpg", "jpeg", "png", "docx", "txt", "md"];
+  const DOCUMENT_EXTENSIONS = ["docx", "txt", "md"];
+  const IMAGE_EXTENSION_PATTERN = /^(jpg|jpeg|png)$/;
+  const HTML2CANVAS_URL = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
 
-  // ---------------------------------------------------------------- helpers
-  function esc(s) {
-    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
-    });
-  }
-  function fmt(v) {
-    if (v === null || v === undefined) return "—";
-    if (typeof v === "boolean") return v ? "да" : "нет";
-    if (typeof v === "object") return JSON.stringify(v);
-    return String(v);
-  }
-  function api(path, body) {
-    var opts = body === undefined ? {} : {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+  const element = (id) => document.getElementById(id);
+
+  let lastEventSeq = 0;
+  let toolCards = {};
+  let attachments = [];
+  let busy = false;
+  let stateRefreshTimer = null;
+  let stickToBottom = true;
+  let dragDepth = 0;
+  const welcomeHtml = element("messages").innerHTML;
+
+  function escapeHtml(value) {
+    const replacements = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
     };
-    return fetch(path, opts).then(function (r) {
-      return r.text().then(function (text) {
-        var data;
-        try { data = text ? JSON.parse(text) : {}; } catch (e) {
-          throw new Error("Сервер плагина вернул не JSON (HTTP " + r.status + " на " + path + "). Подробности — в логе слайсера.");
-        }
-        if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
-        return data;
-      });
-    });
-  }
-  // прокручиваем вниз, только если пользователь сам не ушёл читать историю
-  var stickToBottom = true;
-  $("scroll").addEventListener("scroll", function () {
-    var s = $("scroll");
-    stickToBottom = s.scrollHeight - s.scrollTop - s.clientHeight < 80;
-  });
-  function append(el) {
-    var w = $("welcome");
-    if (w) w.remove();
-    $("messages").appendChild(el);
-    if (stickToBottom) $("scroll").scrollTop = $("scroll").scrollHeight;
-    return el;
-  }
-  function div(cls, html) {
-    var d = document.createElement("div");
-    d.className = cls;
-    if (html !== undefined) d.innerHTML = html;
-    return d;
+    const text = value === null || value === undefined ? "" : String(value);
+    return text.replace(/[&<>"']/g, (character) => replacements[character]);
   }
 
-  // ---------------------------------------------------------------- markdown
-  function inline(s) {
-    return s
+  function formatValue(value) {
+    if (value === null || value === undefined) {
+      return "—";
+    }
+    if (typeof value === "boolean") {
+      return value ? "да" : "нет";
+    }
+    if (typeof value === "object") {
+      return JSON.stringify(value);
+    }
+    return String(value);
+  }
+
+  async function api(path, body) {
+    const options = {};
+    if (body !== undefined) {
+      options.method = "POST";
+      options.headers = { "Content-Type": "application/json" };
+      options.body = JSON.stringify(body);
+    }
+
+    const response = await fetch(path, options);
+    const text = await response.text();
+
+    let data;
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch (error) {
+      throw new Error(
+        `Сервер плагина вернул не JSON (HTTP ${response.status} на ${path}). Подробности — в логе слайсера.`
+      );
+    }
+
+    if (!response.ok) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    return data;
+  }
+
+  function scrollToBottom() {
+    const scroll = element("scroll");
+    scroll.scrollTop = scroll.scrollHeight;
+  }
+
+  function appendToChat(node) {
+    const welcome = element("welcome");
+    if (welcome) {
+      welcome.remove();
+    }
+    element("messages").appendChild(node);
+    if (stickToBottom) {
+      scrollToBottom();
+    }
+    return node;
+  }
+
+  function createDiv(className, html) {
+    const div = document.createElement("div");
+    div.className = className;
+    if (html !== undefined) {
+      div.innerHTML = html;
+    }
+    return div;
+  }
+
+  function formatInline(text) {
+    return text
       .replace(/`([^`]+)`/g, "<code>$1</code>")
       .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
       .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<i>$2</i>");
   }
-  function markdown(src) {
-    var blocks = [];
-    src = esc(src).replace(/```[a-z]*\n?([\s\S]*?)```/g, function (_, code) {
-      blocks.push("<pre>" + code + "</pre>");
-      return "\u0000" + (blocks.length - 1) + "\u0000";
-    });
-    var lines = src.split("\n"), out = [], i = 0;
-    while (i < lines.length) {
-      var line = lines[i];
-      if (/^\s*\|/.test(line)) {
-        var rows = [];
-        while (i < lines.length && /^\s*\|/.test(lines[i])) { rows.push(lines[i]); i++; }
-        var cells = function (r) { return r.trim().replace(/^\||\|$/g, "").split("|").map(function (c) { return inline(c.trim()); }); };
-        var html = "<table>";
-        rows.forEach(function (r, idx) {
-          if (/^\s*\|?[\s:\-|]+\|?\s*$/.test(r)) return;
-          var tag = idx === 0 ? "th" : "td";
-          html += "<tr>" + cells(r).map(function (c) { return "<" + tag + ">" + c + "</" + tag + ">"; }).join("") + "</tr>";
-        });
-        out.push(html + "</table>");
-        continue;
-      }
-      var h = /^(#{1,4})\s+(.*)$/.exec(line);
-      if (h) { out.push("<h" + (h[1].length + 1) + ">" + inline(h[2]) + "</h" + (h[1].length + 1) + ">"); i++; continue; }
-      if (/^\s*([-*]|\d+\.)\s+/.test(line)) {
-        var ordered = /^\s*\d+\./.test(line), items = [];
-        while (i < lines.length && /^\s*([-*]|\d+\.)\s+/.test(lines[i])) {
-          items.push("<li>" + inline(lines[i].replace(/^\s*([-*]|\d+\.)\s+/, "")) + "</li>"); i++;
-        }
-        out.push((ordered ? "<ol>" : "<ul>") + items.join("") + (ordered ? "</ol>" : "</ul>"));
-        continue;
-      }
-      if (!line.trim()) { i++; continue; }
-      var para = [];
-      while (i < lines.length && lines[i].trim() && !/^\s*(\||#|[-*]\s|\d+\.\s)/.test(lines[i])) { para.push(lines[i]); i++; }
-      if (!para.length) { para.push(line); i++; }
-      out.push("<p>" + inline(para.join("<br>")) + "</p>");
-    }
-    return out.join("").replace(/\u0000(\d+)\u0000/g, function (_, n) { return blocks[+n]; });
+
+  function tableCells(row) {
+    return row
+      .trim()
+      .replace(/^\||\|$/g, "")
+      .split("|")
+      .map((cell) => formatInline(cell.trim()));
   }
 
-  // ---------------------------------------------------------------- rendering
-  function shortArgs(args) {
-    if (!args) return "";
-    var parts = [];
-    Object.keys(args).forEach(function (k) {
-      var v = args[k];
-      if (k === "reason") return;
-      if (typeof v === "object") v = JSON.stringify(v);
-      v = String(v);
-      if (k === "path") v = v.split(/[\\/]/).pop();
-      parts.push(k + "=" + (v.length > 60 ? v.slice(0, 57) + "…" : v));
+  function renderTable(rows) {
+    let html = "<table>";
+    rows.forEach((row, index) => {
+      if (/^\s*\|?[\s:\-|]+\|?\s*$/.test(row)) {
+        return;
+      }
+      const tag = index === 0 ? "th" : "td";
+      const cells = tableCells(row).map((cell) => `<${tag}>${cell}</${tag}>`);
+      html += `<tr>${cells.join("")}</tr>`;
+    });
+    return html + "</table>";
+  }
+
+  function markdownToHtml(source) {
+    const codeBlocks = [];
+    const escaped = escapeHtml(source).replace(/```[a-z]*\n?([\s\S]*?)```/g, (match, code) => {
+      codeBlocks.push(`<pre>${code}</pre>`);
+      return `\u0000${codeBlocks.length - 1}\u0000`;
+    });
+
+    const lines = escaped.split("\n");
+    const blocks = [];
+    let index = 0;
+
+    while (index < lines.length) {
+      const line = lines[index];
+
+      if (/^\s*\|/.test(line)) {
+        const rows = [];
+        while (index < lines.length && /^\s*\|/.test(lines[index])) {
+          rows.push(lines[index]);
+          index++;
+        }
+        blocks.push(renderTable(rows));
+        continue;
+      }
+
+      const heading = /^(#{1,4})\s+(.*)$/.exec(line);
+      if (heading) {
+        const level = heading[1].length + 1;
+        blocks.push(`<h${level}>${formatInline(heading[2])}</h${level}>`);
+        index++;
+        continue;
+      }
+
+      if (/^\s*([-*]|\d+\.)\s+/.test(line)) {
+        const ordered = /^\s*\d+\./.test(line);
+        const items = [];
+        while (index < lines.length && /^\s*([-*]|\d+\.)\s+/.test(lines[index])) {
+          const itemText = lines[index].replace(/^\s*([-*]|\d+\.)\s+/, "");
+          items.push(`<li>${formatInline(itemText)}</li>`);
+          index++;
+        }
+        const listTag = ordered ? "ol" : "ul";
+        blocks.push(`<${listTag}>${items.join("")}</${listTag}>`);
+        continue;
+      }
+
+      if (!line.trim()) {
+        index++;
+        continue;
+      }
+
+      const paragraph = [];
+      while (
+        index < lines.length &&
+        lines[index].trim() &&
+        !/^\s*(\||#|[-*]\s|\d+\.\s)/.test(lines[index])
+      ) {
+        paragraph.push(lines[index]);
+        index++;
+      }
+      if (paragraph.length === 0) {
+        paragraph.push(line);
+        index++;
+      }
+      blocks.push(`<p>${formatInline(paragraph.join("<br>"))}</p>`);
+    }
+
+    return blocks.join("").replace(/\u0000(\d+)\u0000/g, (match, number) => codeBlocks[Number(number)]);
+  }
+
+  function shortArguments(args) {
+    if (!args) {
+      return "";
+    }
+
+    const parts = [];
+    Object.keys(args).forEach((key) => {
+      if (key === "reason") {
+        return;
+      }
+
+      let value = args[key];
+      if (typeof value === "object") {
+        value = JSON.stringify(value);
+      }
+      value = String(value);
+      if (key === "path") {
+        value = value.split(/[\\/]/).pop();
+      }
+      if (value.length > 60) {
+        value = value.slice(0, 57) + "…";
+      }
+      parts.push(`${key}=${value}`);
     });
     return parts.join(", ");
   }
 
-  function renderToolCall(ev) {
-    var d = document.createElement("details");
-    d.className = "tool run";
-    d.innerHTML =
-      '<summary><span class="t-icon"><span class="spin"></span></span>' +
-      '<span class="t-name">' + esc(TOOL_LABELS[ev.name] || ev.name) + "</span>" +
-      (ev.source === "mcp" ? ' <span class="badge">MCP</span>' : "") +
-      '<span class="t-args">' + esc(shortArgs(ev.args)) + "</span>" +
-      '<span class="t-meta"></span></summary>' +
-      '<div class="t-body"><div class="t-label">' + esc(ev.name) + " · аргументы</div><pre>" +
-      esc(JSON.stringify(ev.args, null, 2)) + '</pre><div class="t-result"></div></div>';
-    toolCards[ev.call_id] = d;
-    append(d);
+  function renderToolCall(event) {
+    const card = document.createElement("details");
+    card.className = "tool run";
+
+    const label = TOOL_LABELS[event.name] || event.name;
+    const mcpBadge = event.source === "mcp" ? ' <span class="badge">MCP</span>' : "";
+    card.innerHTML = `
+      <summary>
+        <span class="t-icon"><span class="spin"></span></span>
+        <span class="t-name">${escapeHtml(label)}</span>${mcpBadge}
+        <span class="t-args">${escapeHtml(shortArguments(event.args))}</span>
+        <span class="t-meta"></span>
+      </summary>
+      <div class="t-body">
+        <div class="t-label">${escapeHtml(event.name)} · аргументы</div>
+        <pre>${escapeHtml(JSON.stringify(event.args, null, 2))}</pre>
+        <div class="t-result"></div>
+      </div>`;
+
+    toolCards[event.call_id] = card;
+    appendToChat(card);
   }
 
-  function renderToolResult(ev) {
-    var d = toolCards[ev.call_id];
-    if (!d) { renderToolCall({ call_id: ev.call_id, name: ev.name, args: {}, source: ev.source }); d = toolCards[ev.call_id]; }
-    d.className = "tool " + (ev.ok ? "ok" : "fail");
-    d.querySelector(".t-icon").textContent = ev.ok ? "✓" : "✕";
-    d.querySelector(".t-meta").textContent = ev.duration != null ? ev.duration + " с" : "";
-    var body = ev.ok ? JSON.stringify(ev.result, null, 2) : ev.error;
-    if (body && body.length > 20000) body = body.slice(0, 20000) + "\n…";
-    d.querySelector(".t-result").innerHTML =
-      '<div class="t-label">' + (ev.ok ? "результат" : "ошибка") + "</div><pre>" + esc(body) + "</pre>";
-    if (!ev.ok) d.open = true;
-    if (STATE_REFRESH_TOOLS.test(ev.name)) refreshStateSoon();
+  function renderToolResult(event) {
+    if (!toolCards[event.call_id]) {
+      renderToolCall({ call_id: event.call_id, name: event.name, args: {}, source: event.source });
+    }
+    const card = toolCards[event.call_id];
+
+    card.className = event.ok ? "tool ok" : "tool fail";
+    card.querySelector(".t-icon").textContent = event.ok ? "✓" : "✕";
+    card.querySelector(".t-meta").textContent = event.duration !== null && event.duration !== undefined
+      ? `${event.duration} с`
+      : "";
+
+    let body = event.ok ? JSON.stringify(event.result, null, 2) : event.error;
+    if (body && body.length > 20000) {
+      body = body.slice(0, 20000) + "\n…";
+    }
+    const title = event.ok ? "результат" : "ошибка";
+    card.querySelector(".t-result").innerHTML = `<div class="t-label">${title}</div><pre>${escapeHtml(body)}</pre>`;
+
+    if (!event.ok) {
+      card.open = true;
+    }
+    if (STATE_CHANGING_TOOLS.test(event.name)) {
+      scheduleStateRefresh();
+    }
   }
 
-  function renderChanges(ev) {
-    var rows = (ev.changes || []).map(function (c) {
-      return "<tr><td><b>" + esc(c.label || c.key) + '</b> <span class="muted small">' + esc(c.key) + "</span></td>" +
-        '<td><span class="old">' + esc(fmt(c.old)) + "</span> → <b>" + esc(fmt(c.new)) + "</b></td></tr>";
-    }).join("");
-    append(div("card changes",
-      '<div class="c-title">✎ Изменены настройки</div>' + (rows ? "<table>" + rows + "</table>" : "") +
-      (ev.reason ? '<div class="reason">' + esc(ev.reason) + "</div>" : "")));
+  function renderSettingsChange(event) {
+    const rows = (event.changes || []).map((change) => `
+      <tr>
+        <td><b>${escapeHtml(change.label || change.key)}</b> <span class="muted small">${escapeHtml(change.key)}</span></td>
+        <td><span class="old">${escapeHtml(formatValue(change.old))}</span> → <b>${escapeHtml(formatValue(change.new))}</b></td>
+      </tr>`);
+
+    let html = '<div class="c-title">✎ Изменены настройки</div>';
+    if (rows.length > 0) {
+      html += `<table>${rows.join("")}</table>`;
+    }
+    if (event.reason) {
+      html += `<div class="reason">${escapeHtml(event.reason)}</div>`;
+    }
+    appendToChat(createDiv("card changes", html));
   }
 
   function renderSliceDone(result) {
-    result = result || {};
-    append(div("card result",
-      '<div class="c-title">✓ Слайсинг завершён</div><div class="stats">' +
-      "<span>⏱ " + esc(result.print_time || "—") + "</span>" +
-      "<span>🧵 " + esc(result.material_g != null ? result.material_g + " г" : "—") + "</span>" +
-      "<span>📏 " + esc(result.material_m != null ? result.material_m + " м" : "—") + "</span></div>"));
+    const info = result || {};
+    const grams = info.material_g !== null && info.material_g !== undefined ? `${info.material_g} г` : "—";
+    const meters = info.material_m !== null && info.material_m !== undefined ? `${info.material_m} м` : "—";
+    const html = `
+      <div class="c-title">✓ Слайсинг завершён</div>
+      <div class="stats">
+        <span>⏱ ${escapeHtml(info.print_time || "—")}</span>
+        <span>🧵 ${escapeHtml(grams)}</span>
+        <span>📏 ${escapeHtml(meters)}</span>
+      </div>`;
+    appendToChat(createDiv("card result", html));
+  }
+
+  function renderSnapshot(event) {
+    const caption = escapeHtml(event.caption || "Снимок сцены");
+    const card = appendToChat(createDiv(
+      "card snapshot",
+      `<div class="c-title">👁 ${caption} <span class="muted small">— агент смотрит на модель</span></div>`
+    ));
+
+    const image = document.createElement("img");
+    image.src = event.image;
+    image.alt = "Снимок сцены";
+    image.onload = () => {
+      if (stickToBottom) {
+        scrollToBottom();
+      }
+    };
+    card.appendChild(image);
+  }
+
+  function renderSavedFile(event) {
+    const kind = event.kind === "gcode" ? "G-code" : "Проект 3MF";
+    let checkText = "";
+    if (event.check) {
+      const verdict = event.check.valid ? " ✓" : " ⚠ " + event.check.problems.join("; ");
+      checkText = ` · слоёв: ${event.check.layers}${verdict}`;
+    }
+    const html = `💾 ${kind}: <code>${escapeHtml(event.path)}</code>${escapeHtml(checkText)}`;
+    appendToChat(createDiv("card", html));
+  }
+
+  function renderUserMessage(event) {
+    const message = appendToChat(createDiv("msg user"));
+    message.textContent = event.text || "";
+
+    if (event.attachments && event.attachments.length > 0) {
+      const attachmentLine = createDiv("att");
+      attachmentLine.textContent = "📎 " + event.attachments.join(", ");
+      message.appendChild(attachmentLine);
+    }
   }
 
   function setSliceBar(state, progress) {
-    var bar = $("slice-bar");
-    if (state === "processing") {
-      bar.classList.remove("hidden");
-      var pct = Math.round((progress || 0) * 100);
-      $("slice-progress").style.width = pct + "%";
-      $("slice-pct").textContent = pct + "%";
-    } else {
+    const bar = element("slice-bar");
+    if (state !== "processing") {
       bar.classList.add("hidden");
+      return;
     }
+
+    bar.classList.remove("hidden");
+    const percent = Math.round((progress || 0) * 100);
+    element("slice-progress").style.width = percent + "%";
+    element("slice-pct").textContent = percent + "%";
+  }
+
+  function statusText(state, tool) {
+    if (state === "thinking") {
+      return "Думает…";
+    }
+    if (state === "tool") {
+      return "Выполняет: " + (TOOL_LABELS[tool] || tool);
+    }
+    if (state === "error") {
+      return "Ошибка";
+    }
+    return "Готов";
   }
 
   function setStatus(state, tool) {
-    var pill = $("status");
-    pill.className = "pill " + (state === "idle" ? "idle" : state === "error" ? "error" : "");
-    pill.textContent = state === "thinking" ? "Думает…" :
-      state === "tool" ? "Выполняет: " + (TOOL_LABELS[tool] || tool) :
-      state === "error" ? "Ошибка" : "Готов";
+    const pill = element("status");
+    pill.className = "pill";
+    if (state === "idle") {
+      pill.classList.add("idle");
+    } else if (state === "error") {
+      pill.classList.add("error");
+    }
+    pill.textContent = statusText(state, tool);
+
     busy = state === "thinking" || state === "tool";
-    $("btn-send").classList.toggle("hidden", busy);
-    $("btn-stop").classList.toggle("hidden", !busy);
+    element("btn-send").classList.toggle("hidden", busy);
+    element("btn-stop").classList.toggle("hidden", !busy);
   }
 
-  function handle(ev) {
-    switch (ev.type) {
+  function handleSliceState(event) {
+    setSliceBar(event.state, 0);
+    if (event.state === "done") {
+      renderSliceDone(event.result);
+    }
+    if (event.state === "error" || event.state === "disabled") {
+      appendToChat(createDiv("msg error", escapeHtml(event.message || "Ошибка слайсинга")));
+    }
+    scheduleStateRefresh();
+  }
+
+  function resetChat() {
+    element("messages").innerHTML = welcomeHtml;
+    bindExamples();
+    toolCards = {};
+  }
+
+  function handleEvent(event) {
+    switch (event.type) {
       case "reset":
-        $("messages").innerHTML = WELCOME_HTML;
-        bindExamples();
-        toolCards = {};
+        resetChat();
         break;
       case "user":
-        var u = append(div("msg user"));
-        u.textContent = ev.text || "";
-        if (ev.attachments && ev.attachments.length) {
-          var a = div("att"); a.textContent = "📎 " + ev.attachments.join(", "); u.appendChild(a);
-        }
+        renderUserMessage(event);
         break;
-      case "assistant": append(div("msg assistant", markdown(ev.text || ""))); break;
-      case "tool_call": renderToolCall(ev); break;
-      case "tool_result": renderToolResult(ev); break;
-      case "settings_changed": renderChanges(ev); refreshStateSoon(); break;
-      case "profile_changed": case "scene_changed": refreshStateSoon(); break;
+      case "assistant":
+        appendToChat(createDiv("msg assistant", markdownToHtml(event.text || "")));
+        break;
+      case "tool_call":
+        renderToolCall(event);
+        break;
+      case "tool_result":
+        renderToolResult(event);
+        break;
+      case "settings_changed":
+        renderSettingsChange(event);
+        scheduleStateRefresh();
+        break;
+      case "profile_changed":
+      case "scene_changed":
+        scheduleStateRefresh();
+        break;
       case "slice_state":
-        setSliceBar(ev.state, 0);
-        if (ev.state === "done") renderSliceDone(ev.result);
-        if (ev.state === "error" || ev.state === "disabled") append(div("msg error", esc(ev.message || "Ошибка слайсинга")));
-        refreshStateSoon();
+        handleSliceState(event);
         break;
-      case "slice_progress": setSliceBar("processing", ev.progress); break;
+      case "slice_progress":
+        setSliceBar("processing", event.progress);
+        break;
       case "snapshot":
-        var snap = append(div("card snapshot", '<div class="c-title">👁 ' + esc(ev.caption || "Снимок сцены") +
-          ' <span class="muted small">— агент смотрит на модель</span></div>'));
-        var img = document.createElement("img");
-        img.src = ev.image; img.alt = "Снимок сцены";
-        img.onload = function () { if (stickToBottom) $("scroll").scrollTop = $("scroll").scrollHeight; };
-        snap.appendChild(img);
+        renderSnapshot(event);
         break;
       case "file_saved":
-        var check = ev.check ? " · слоёв: " + ev.check.layers + (ev.check.valid ? " ✓" : " ⚠ " + ev.check.problems.join("; ")) : "";
-        append(div("card", "💾 " + (ev.kind === "gcode" ? "G-code" : "Проект 3MF") + ": <code>" + esc(ev.path) + "</code>" + esc(check)));
+        renderSavedFile(event);
         break;
-      case "status": setStatus(ev.state, ev.tool); break;
-      case "error": append(div("msg error", "⚠ " + esc(ev.message))); setStatus("error"); break;
+      case "status":
+        setStatus(event.state, event.tool);
+        break;
+      case "error":
+        appendToChat(createDiv("msg error", "⚠ " + escapeHtml(event.message)));
+        setStatus("error");
+        break;
     }
   }
 
-  // ---------------------------------------------------------------- polling
-  function poll() {
-    fetch("/api/events?since=" + seq + "&wait=20")
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        (data.events || []).forEach(function (ev) { seq = Math.max(seq, ev.seq); handle(ev); });
-        if (!data.busy && busy && !(data.events || []).length) setStatus("idle");
-        poll();
-      })
-      .catch(function () {
-        $("status").className = "pill error";
-        $("status").textContent = "Нет связи со слайсером";
-        setTimeout(poll, 2000);
+  async function pollEvents() {
+    try {
+      const response = await fetch(`/api/events?since=${lastEventSeq}&wait=20`);
+      const data = await response.json();
+      const events = data.events || [];
+
+      events.forEach((event) => {
+        lastEventSeq = Math.max(lastEventSeq, event.seq);
+        handleEvent(event);
       });
+      if (!data.busy && busy && events.length === 0) {
+        setStatus("idle");
+      }
+      pollEvents();
+    } catch (error) {
+      const pill = element("status");
+      pill.className = "pill error";
+      pill.textContent = "Нет связи со слайсером";
+      setTimeout(pollEvents, 2000);
+    }
   }
 
-  // ---------------------------------------------------------------- side panel
-  function refreshStateSoon() {
-    clearTimeout(stateTimer);
-    stateTimer = setTimeout(refreshState, 400);
-  }
-  function refreshState() {
-    api("/api/state").then(function (data) {
-      var box = $("state");
-      if (!data.ok) { box.innerHTML = '<span class="muted">' + esc(data.error) + "</span>"; return; }
-      var s = data.state, mode = s.print_mode || {}, q = s.quality || {}, m = s.material || {};
-      var html = "<dl>" +
-        "<dt>Принтер</dt><dd>" + esc(s.printer) + "</dd>" +
-        "<dt>Режим</dt><dd>" + esc(mode.label || mode.mode || mode.error || "—") + "</dd>" +
-        "<dt>Профиль</dt><dd>" + esc(q.name || q.quality_type || "—") + "</dd>" +
-        "<dt>Материал</dt><dd>" + esc(m.name || "—") + "</dd>" +
-        "<dt>Слайсинг</dt><dd>" + esc((s.slicing || {}).state || "—") + "</dd></dl>";
-      (s.objects || []).forEach(function (o) {
-        html += '<div class="obj"><b>' + esc(o.object_id) + "</b> " + esc(o.name) + "<br>" +
-          esc(o.size_mm.x + " × " + o.size_mm.y + " × " + o.size_mm.z + " мм") +
-          (o.outside_build_area ? ' <span style="color:var(--err)">вне стола</span>' : "") + "</div>";
-      });
-      box.innerHTML = html;
-    }).catch(function () {});
+  function scheduleStateRefresh() {
+    clearTimeout(stateRefreshTimer);
+    stateRefreshTimer = setTimeout(refreshState, 400);
   }
 
-  // ---------------------------------------------------------------- attachments
-  var ALLOWED_EXT = ["stl", "obj", "3mf", "jpg", "jpeg", "png", "docx", "txt", "md"];
-  var DOC_EXT = ["docx", "txt", "md"];
+  function stateHtml(state) {
+    const mode = state.print_mode || {};
+    const quality = state.quality || {};
+    const material = state.material || {};
+    const slicing = state.slicing || {};
 
-  function addFiles(list) {
-    Array.prototype.forEach.call(list, function (file) {
-      var ext = file.name.split(".").pop().toLowerCase();
-      if (ALLOWED_EXT.indexOf(ext) < 0) {
-        append(div("msg error", "Неподдерживаемый файл: " + esc(file.name) +
-          " (модели STL/OBJ/3MF, фото JPG/PNG, документы DOCX/TXT)"));
+    let html = `
+      <dl>
+        <dt>Принтер</dt><dd>${escapeHtml(state.printer)}</dd>
+        <dt>Режим</dt><dd>${escapeHtml(mode.label || mode.mode || mode.error || "—")}</dd>
+        <dt>Профиль</dt><dd>${escapeHtml(quality.name || quality.quality_type || "—")}</dd>
+        <dt>Материал</dt><dd>${escapeHtml(material.name || "—")}</dd>
+        <dt>Слайсинг</dt><dd>${escapeHtml(slicing.state || "—")}</dd>
+      </dl>`;
+
+    (state.objects || []).forEach((object) => {
+      const size = `${object.size_mm.x} × ${object.size_mm.y} × ${object.size_mm.z} мм`;
+      const outside = object.outside_build_area ? ' <span style="color:var(--err)">вне стола</span>' : "";
+      html += `
+        <div class="obj">
+          <b>${escapeHtml(object.object_id)}</b> ${escapeHtml(object.name)}<br>
+          ${escapeHtml(size)}${outside}
+        </div>`;
+    });
+    return html;
+  }
+
+  async function refreshState() {
+    try {
+      const data = await api("/api/state");
+      const box = element("state");
+      if (!data.ok) {
+        box.innerHTML = `<span class="muted">${escapeHtml(data.error)}</span>`;
         return;
       }
-      var reader = new FileReader();
-      reader.onload = function () {
-        var url = reader.result;
+      box.innerHTML = stateHtml(data.state);
+    } catch (error) {
+      return;
+    }
+  }
+
+  function fileExtension(fileName) {
+    return fileName.split(".").pop().toLowerCase();
+  }
+
+  function attachmentKind(extension) {
+    if (DOCUMENT_EXTENSIONS.includes(extension)) {
+      return "doc";
+    }
+    if (IMAGE_EXTENSION_PATTERN.test(extension)) {
+      return "image";
+    }
+    return "model";
+  }
+
+  function addFiles(fileList) {
+    Array.from(fileList).forEach((file) => {
+      const extension = fileExtension(file.name);
+      if (!ALLOWED_EXTENSIONS.includes(extension)) {
+        appendToChat(createDiv(
+          "msg error",
+          `Неподдерживаемый файл: ${escapeHtml(file.name)} (модели STL/OBJ/3MF, фото JPG/PNG, документы DOCX/TXT)`
+        ));
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result;
+        const kind = attachmentKind(extension);
         attachments.push({
-          name: file.name, data: url.slice(url.indexOf(",") + 1),
-          preview: /^(jpg|jpeg|png)$/.test(ext) ? url : null,
-          kind: DOC_EXT.indexOf(ext) >= 0 ? "doc" : /^(jpg|jpeg|png)$/.test(ext) ? "image" : "model"
+          name: file.name,
+          data: dataUrl.slice(dataUrl.indexOf(",") + 1),
+          preview: kind === "image" ? dataUrl : null,
+          kind: kind,
         });
         renderAttachments();
       };
       reader.readAsDataURL(file);
     });
   }
+
+  function attachmentIcon(attachment) {
+    if (attachment.preview) {
+      return `<img src="${attachment.preview}" alt="">`;
+    }
+    if (attachment.kind === "doc") {
+      return "📄";
+    }
+    return "🧊";
+  }
+
   function renderAttachments() {
-    var box = $("attachments");
+    const box = element("attachments");
     box.innerHTML = "";
-    attachments.forEach(function (a, idx) {
-      var icon = a.preview ? '<img src="' + a.preview + '" alt="">' : a.kind === "doc" ? "📄" : "🧊";
-      var chip = div("chip", icon + esc(a.name) + ' <button type="button" title="Убрать">✕</button>');
-      chip.querySelector("button").onclick = function () { attachments.splice(idx, 1); renderAttachments(); };
+
+    attachments.forEach((attachment, index) => {
+      const chip = createDiv(
+        "chip",
+        `${attachmentIcon(attachment)}${escapeHtml(attachment.name)} <button type="button" title="Убрать">✕</button>`
+      );
+      chip.querySelector("button").onclick = () => {
+        attachments.splice(index, 1);
+        renderAttachments();
+      };
       box.appendChild(chip);
     });
   }
 
-  // ---------------------------------------------------------------- send
-  function send() {
-    var text = $("input").value.trim();
-    if (!text && !attachments.length) return;
-    var payload = { text: text, attachments: attachments.map(function (a) { return { name: a.name, data: a.data }; }) };
-    $("btn-send").disabled = true;
+  async function sendMessage() {
+    const text = element("input").value.trim();
+    if (!text && attachments.length === 0) {
+      return;
+    }
+
+    const payload = {
+      text: text,
+      attachments: attachments.map((attachment) => ({ name: attachment.name, data: attachment.data })),
+    };
+
+    element("btn-send").disabled = true;
     stickToBottom = true;
-    api("/api/message", payload).then(function () {
-      $("input").value = "";
+    try {
+      await api("/api/message", payload);
+      element("input").value = "";
       attachments = [];
       renderAttachments();
-    }).catch(function (e) {
-      append(div("msg error", "⚠ " + esc(e.message)));
-      if (/настройках/.test(e.message)) openSettings();
-    }).then(function () { $("btn-send").disabled = false; });
+    } catch (error) {
+      appendToChat(createDiv("msg error", "⚠ " + escapeHtml(error.message)));
+      if (/настройках/.test(error.message)) {
+        openSettings();
+      }
+    } finally {
+      element("btn-send").disabled = false;
+    }
   }
 
-  // ---------------------------------------------------------------- settings
-  function openSettings() {
-    api("/api/config").then(function (c) {
-      var f = $("settings-form");
-      f.base_url.value = c.base_url || "";
-      f.model.value = c.model || "";
-      f.api_key.value = "";
-      f.verify_ssl.checked = !!c.verify_ssl;
-      f.output_dir.value = c.output_dir || "";
-      $("key-hint").textContent = c.api_key_set ? "Ключ сохранён (" + c.api_key_hint + "). Оставьте поле пустым, чтобы не менять." : "Ключ не задан.";
-      $("settings-msg").textContent = "";
-      $("settings").showModal();
-    });
+  async function openSettings() {
+    const config = await api("/api/config");
+    const form = element("settings-form");
+
+    form.base_url.value = config.base_url || "";
+    form.model.value = config.model || "";
+    form.api_key.value = "";
+    form.verify_ssl.checked = Boolean(config.verify_ssl);
+    form.output_dir.value = config.output_dir || "";
+
+    element("key-hint").textContent = config.api_key_set
+      ? `Ключ сохранён (${config.api_key_hint}). Оставьте поле пустым, чтобы не менять.`
+      : "Ключ не задан.";
+    element("settings-msg").textContent = "";
+    element("settings").showModal();
   }
+
   function saveSettings() {
-    var f = $("settings-form");
+    const form = element("settings-form");
     return api("/api/config", {
-      base_url: f.base_url.value.trim(), model: f.model.value.trim(), api_key: f.api_key.value.trim(),
-      verify_ssl: f.verify_ssl.checked, output_dir: f.output_dir.value.trim()
-    });
-  }
-  function loadConfig() {
-    api("/api/config").then(function (c) {
-      $("mcp-url").textContent = c.mcp_url;
-      $("tool-count").textContent = "Инструментов: " + (c.tools || []).length +
-        " · плагин v" + (c.plugin_version || "?");
-      $("tool-count").title = c.plugin_dir || "";
-      if (!c.llm_ready) openSettings();
+      base_url: form.base_url.value.trim(),
+      model: form.model.value.trim(),
+      api_key: form.api_key.value.trim(),
+      verify_ssl: form.verify_ssl.checked,
+      output_dir: form.output_dir.value.trim(),
     });
   }
 
-  // ---------------------------------------------------------------- screenshot
-  function screenshot() {
-    var run = function () {
-      window.html2canvas($("messages"), { backgroundColor: getComputedStyle(document.body).backgroundColor, scale: 1.5 })
-        .then(function (canvas) {
-          var a = document.createElement("a");
-          a.download = "chat_" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".png";
-          a.href = canvas.toDataURL("image/png");
-          a.click();
-        });
+  async function loadConfig() {
+    const config = await api("/api/config");
+    const toolCount = element("tool-count");
+
+    element("mcp-url").textContent = config.mcp_url;
+    toolCount.textContent = `Инструментов: ${(config.tools || []).length} · плагин v${config.plugin_version || "?"}`;
+    toolCount.title = config.plugin_dir || "";
+
+    if (!config.llm_ready) {
+      openSettings();
+    }
+  }
+
+  function showSettingsMessage(text, isError) {
+    const className = isError ? "msg-err" : "msg-ok";
+    element("settings-msg").innerHTML = `<span class="${className}">${escapeHtml(text)}</span>`;
+  }
+
+  async function testConnection() {
+    element("settings-msg").textContent = "Проверяю…";
+    try {
+      await saveSettings();
+      const result = await api("/api/test_llm", {});
+      if (result.ok) {
+        showSettingsMessage(`✓ Подключение работает (${result.model}, ${result.latency_s} с)`, false);
+      } else {
+        showSettingsMessage("✕ " + result.error, true);
+      }
+    } catch (error) {
+      showSettingsMessage("✕ " + error.message, true);
+    }
+  }
+
+  async function submitSettings(event) {
+    event.preventDefault();
+    try {
+      await saveSettings();
+      element("settings").close();
+      loadConfig();
+    } catch (error) {
+      showSettingsMessage(error.message, true);
+    }
+  }
+
+  function downloadScreenshot() {
+    const background = getComputedStyle(document.body).backgroundColor;
+    window.html2canvas(element("messages"), { backgroundColor: background, scale: 1.5 }).then((canvas) => {
+      const link = document.createElement("a");
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      link.download = `chat_${timestamp}.png`;
+      link.href = canvas.toDataURL("image/png");
+      link.click();
+    });
+  }
+
+  function takeScreenshot() {
+    if (window.html2canvas) {
+      downloadScreenshot();
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = HTML2CANVAS_URL;
+    script.onload = downloadScreenshot;
+    script.onerror = () => {
+      alert("Нет доступа к интернету для html2canvas — сделайте скриншот средствами ОС.");
     };
-    if (window.html2canvas) return run();
-    var s = document.createElement("script");
-    s.src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
-    s.onload = run;
-    s.onerror = function () { alert("Нет доступа к интернету для html2canvas — сделайте скриншот средствами ОС."); };
-    document.head.appendChild(s);
+    document.head.appendChild(script);
   }
 
-  // ---------------------------------------------------------------- wiring
-  $("composer").addEventListener("submit", function (e) { e.preventDefault(); send(); });
-  $("input").addEventListener("keydown", function (e) {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-  });
-  $("file-input").addEventListener("change", function (e) { addFiles(e.target.files); e.target.value = ""; });
-  $("btn-stop").onclick = function () { api("/api/stop", {}); };
-  $("btn-reset").onclick = function () { if (confirm("Начать новый диалог? История будет очищена.")) api("/api/reset", {}); };
-  $("btn-settings").onclick = openSettings;
-  $("btn-shot").onclick = screenshot;
-  $("btn-cancel").onclick = function () { $("settings").close(); };
-  $("settings-form").addEventListener("submit", function (e) {
-    e.preventDefault();
-    saveSettings().then(function () { $("settings").close(); loadConfig(); })
-      .catch(function (err) { $("settings-msg").innerHTML = '<span class="msg-err">' + esc(err.message) + "</span>"; });
-  });
-  $("btn-test").onclick = function () {
-    $("settings-msg").textContent = "Проверяю…";
-    saveSettings().then(function () { return api("/api/test_llm", {}); }).then(function (r) {
-      $("settings-msg").innerHTML = r.ok
-        ? '<span class="msg-ok">✓ Подключение работает (' + esc(r.model) + ", " + r.latency_s + " с)</span>"
-        : '<span class="msg-err">✕ ' + esc(r.error) + "</span>";
-    }).catch(function (err) { $("settings-msg").innerHTML = '<span class="msg-err">✕ ' + esc(err.message) + "</span>"; });
-  };
   function bindExamples() {
-    document.querySelectorAll(".example").forEach(function (b) {
-      b.onclick = function () { $("input").value = b.textContent; $("input").focus(); };
+    document.querySelectorAll(".example").forEach((button) => {
+      button.onclick = () => {
+        element("input").value = button.textContent;
+        element("input").focus();
+      };
     });
   }
-  bindExamples();
 
-  var dragDepth = 0;
-  window.addEventListener("dragenter", function (e) { e.preventDefault(); dragDepth++; $("drop").classList.remove("hidden"); });
-  window.addEventListener("dragleave", function () { if (--dragDepth <= 0) { dragDepth = 0; $("drop").classList.add("hidden"); } });
-  window.addEventListener("dragover", function (e) { e.preventDefault(); });
-  window.addEventListener("drop", function (e) {
-    e.preventDefault(); dragDepth = 0; $("drop").classList.add("hidden");
-    if (e.dataTransfer && e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
-  });
+  function confirmReset() {
+    if (confirm("Начать новый диалог? История будет очищена.")) {
+      api("/api/reset", {});
+    }
+  }
 
+  function bindDragAndDrop() {
+    const dropOverlay = element("drop");
+
+    window.addEventListener("dragenter", (event) => {
+      event.preventDefault();
+      dragDepth++;
+      dropOverlay.classList.remove("hidden");
+    });
+
+    window.addEventListener("dragleave", () => {
+      dragDepth--;
+      if (dragDepth <= 0) {
+        dragDepth = 0;
+        dropOverlay.classList.add("hidden");
+      }
+    });
+
+    window.addEventListener("dragover", (event) => {
+      event.preventDefault();
+    });
+
+    window.addEventListener("drop", (event) => {
+      event.preventDefault();
+      dragDepth = 0;
+      dropOverlay.classList.add("hidden");
+      if (event.dataTransfer && event.dataTransfer.files.length > 0) {
+        addFiles(event.dataTransfer.files);
+      }
+    });
+  }
+
+  function bindEvents() {
+    element("scroll").addEventListener("scroll", () => {
+      const scroll = element("scroll");
+      stickToBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 80;
+    });
+
+    element("composer").addEventListener("submit", (event) => {
+      event.preventDefault();
+      sendMessage();
+    });
+
+    element("input").addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        sendMessage();
+      }
+    });
+
+    element("file-input").addEventListener("change", (event) => {
+      addFiles(event.target.files);
+      event.target.value = "";
+    });
+
+    element("btn-stop").addEventListener("click", () => api("/api/stop", {}));
+    element("btn-reset").addEventListener("click", confirmReset);
+    element("btn-settings").addEventListener("click", openSettings);
+    element("btn-shot").addEventListener("click", takeScreenshot);
+    element("btn-cancel").addEventListener("click", () => element("settings").close());
+    element("btn-test").addEventListener("click", testConnection);
+    element("settings-form").addEventListener("submit", submitSettings);
+
+    bindExamples();
+    bindDragAndDrop();
+  }
+
+  bindEvents();
   loadConfig();
   refreshState();
-  poll();
+  pollEvents();
 })();

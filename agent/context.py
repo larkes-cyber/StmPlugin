@@ -1,21 +1,17 @@
-# -*- coding: utf-8 -*-
-"""Сборка всех частей плагина в один контекст."""
 from .agent import Agent
 from .config import Config
 from .events import EventBus
 from .llm import LLMClient
 from .mcp import MCPServer
 from .server import start_server
+from .slicer import SlicerAPI
 from .tools import build_registry
 
 
 class Context(object):
-    def __init__(self, config=None, slicer_factory=None, llm=None):
+    def __init__(self, config=None, slicer_factory=SlicerAPI, llm=None):
         self.config = config or Config()
         self.events = EventBus()
-        if slicer_factory is None:
-            from .slicer import SlicerAPI
-            slicer_factory = SlicerAPI
         self.slicer = slicer_factory(self.events, self.config)
         self.registry = build_registry(self.slicer, self.events)
         self.mcp = MCPServer(self.registry)
@@ -29,10 +25,11 @@ class Context(object):
         return self
 
     def stop(self):
-        if self.server is not None:
-            self.server.shutdown()
-            self.server.server_close()
-            self.server = None
+        if self.server is None:
+            return
+        self.server.shutdown()
+        self.server.server_close()
+        self.server = None
 
     @property
     def url(self):

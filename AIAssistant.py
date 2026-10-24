@@ -1,11 +1,14 @@
-# -*- coding: utf-8 -*-
-"""Точка входа плагина: пункт меню, запуск локального сервера, открытие чата в браузере."""
 import os
 import webbrowser
 
+from PyQt5.QtCore import QUrl
+from PyQt5.QtGui import QDesktopServices
+from UM.Application import Application
 from UM.Extension import Extension
 from UM.Logger import Logger
-from UM.Application import Application
+
+from .agent.context import Context
+from .agent.version import PLUGIN_DIR, plugin_version
 
 
 class AIAssistant(Extension):
@@ -14,14 +17,10 @@ class AIAssistant(Extension):
         self.setMenuName("AI Assistant")
         self.addMenuItem("Открыть чат", self.showChat)
         self.addMenuItem("Папка результатов", self.openResultsFolder)
-        self._ctx = None
-        from .agent.version import PLUGIN_DIR, plugin_version
+        self._context = None
+
         Logger.log("i", "AIAssistant: plugin v%s loaded from %s", plugin_version(), PLUGIN_DIR)
-        # MCP-сервер должен быть доступен сразу после старта слайсера, а не только после открытия чата
-        try:
-            Application.getInstance().engineCreatedSignal.connect(self._onEngineCreated)
-        except Exception:
-            Logger.logException("w", "AIAssistant: engineCreatedSignal is not available")
+        Application.getInstance().engineCreatedSignal.connect(self._onEngineCreated)
 
     def _onEngineCreated(self):
         try:
@@ -30,28 +29,25 @@ class AIAssistant(Extension):
             Logger.logException("e", "AIAssistant: failed to start server")
 
     def _ensureStarted(self):
-        if self._ctx is None:
-            from .agent.context import Context
-            ctx = Context()
-            ctx.start()
-            self._ctx = ctx
-            Logger.log("i", "AIAssistant: chat at %s, MCP at %s/mcp", ctx.url, ctx.url)
-        return self._ctx
+        if self._context is None:
+            context = Context()
+            context.start()
+            self._context = context
+            Logger.log("i", "AIAssistant: chat at %s, MCP at %s/mcp", context.url, context.url)
+        return self._context
 
     def showChat(self):
         try:
-            ctx = self._ensureStarted()
-            Logger.log("i", "AIAssistant: opening chat %s/", ctx.url)
-            webbrowser.open(ctx.url + "/")
+            context = self._ensureStarted()
+            Logger.log("i", "AIAssistant: opening chat %s/", context.url)
+            webbrowser.open(context.url + "/")
         except Exception:
             Logger.logException("e", "AIAssistant: failed to open chat")
 
     def openResultsFolder(self):
         try:
-            from PyQt5.QtCore import QUrl
-            from PyQt5.QtGui import QDesktopServices
-            ctx = self._ensureStarted()
-            path = ctx.config.get("output_dir")
+            context = self._ensureStarted()
+            path = context.config.get("output_dir")
             if not os.path.isdir(path):
                 os.makedirs(path)
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))

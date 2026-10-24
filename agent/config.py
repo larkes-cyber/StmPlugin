@@ -1,8 +1,8 @@
-# -*- coding: utf-8 -*-
-"""Настройки плагина. Хранятся в настройках приложения (Preferences), ключ не попадает в исходники."""
 import os
 
-PREFIX = "ai_assistant/"
+from UM.Application import Application
+
+PREFERENCE_PREFIX = "ai_assistant/"
 
 DEFAULTS = {
     "base_url": "",
@@ -14,75 +14,74 @@ DEFAULTS = {
     "output_dir": os.path.join(os.path.expanduser("~"), "Documents", "STE_AI_results"),
 }
 
+TRUE_STRINGS = ("true", "1", "yes", "on")
+
 
 def _app_preferences():
-    try:
-        from UM.Application import Application
-        app = Application.getInstance()
-    except ImportError:
-        return None
+    app = Application.getInstance()
     if app is None:
         return None
-    try:
-        return app.getPreferences()
-    except AttributeError:
-        from UM.Preferences import Preferences
-        return Preferences.getInstance()
+    return app.getPreferences()
 
 
 def _coerce(value, default):
     if isinstance(default, bool):
         if isinstance(value, str):
-            return value.strip().lower() in ("true", "1", "yes", "on")
+            return value.strip().lower() in TRUE_STRINGS
         return bool(value)
+
     if isinstance(default, int):
         try:
             return int(value)
         except (TypeError, ValueError):
             return default
+
     if isinstance(default, float):
         try:
             return float(value)
         except (TypeError, ValueError):
             return default
-    return "" if value is None else str(value)
+
+    if value is None:
+        return ""
+    return str(value)
 
 
 class Config(object):
     def __init__(self, preferences=None, use_app=True):
-        self._prefs = preferences
-        if self._prefs is None and use_app:
-            self._prefs = _app_preferences()
-        self._mem = dict(DEFAULTS)
-        if self._prefs is not None:
+        self._preferences = preferences
+        if self._preferences is None and use_app:
+            self._preferences = _app_preferences()
+
+        self._values = dict(DEFAULTS)
+
+        if self._preferences is not None:
             for key, default in DEFAULTS.items():
-                try:
-                    self._prefs.addPreference(PREFIX + key, default)
-                except Exception:
-                    pass
+                self._preferences.addPreference(PREFERENCE_PREFIX + key, default)
 
     def get(self, key):
-        default = DEFAULTS[key]
-        if self._prefs is None:
-            return self._mem[key]
-        return _coerce(self._prefs.getValue(PREFIX + key), default)
+        if self._preferences is None:
+            return self._values[key]
+        stored_value = self._preferences.getValue(PREFERENCE_PREFIX + key)
+        return _coerce(stored_value, DEFAULTS[key])
 
     def set(self, key, value):
         value = _coerce(value, DEFAULTS[key])
-        if self._prefs is None:
-            self._mem[key] = value
+        if self._preferences is None:
+            self._values[key] = value
         else:
-            self._prefs.setValue(PREFIX + key, value)
+            self._preferences.setValue(PREFERENCE_PREFIX + key, value)
 
     def update(self, data):
         for key in DEFAULTS:
             if key not in data:
                 continue
+
             value = data[key]
-            # пустой ключ в форме означает «не менять»; для удаления есть clear_api_key
             if key == "api_key" and not value:
                 continue
             self.set(key, value)
+
         if data.get("clear_api_key"):
             self.set("api_key", "")
 
@@ -91,10 +90,17 @@ class Config(object):
         for key in DEFAULTS:
             if key != "api_key":
                 result[key] = self.get(key)
+
         api_key = self.get("api_key")
         result["api_key_set"] = bool(api_key)
-        result["api_key_hint"] = ("…" + api_key[-4:]) if len(api_key) > 8 else ""
+        if len(api_key) > 8:
+            result["api_key_hint"] = "…" + api_key[-4:]
+        else:
+            result["api_key_hint"] = ""
         return result
 
     def llm_ready(self):
-        return bool(self.get("base_url") and self.get("api_key") and self.get("model"))
+        has_url = bool(self.get("base_url"))
+        has_key = bool(self.get("api_key"))
+        has_model = bool(self.get("model"))
+        return has_url and has_key and has_model

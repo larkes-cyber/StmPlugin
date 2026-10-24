@@ -22,7 +22,7 @@ def serve_static_file(handler, web_dir, url_path):
     full_path = os.path.abspath(os.path.join(web_dir, rel_path))
 
     if not full_path.startswith(web_dir) or not os.path.isfile(full_path):
-        handler.send_error(404, "Файл не найден")
+        handler.send_error(404, "Not Found")
         return
 
     ext = os.path.splitext(full_path)[1].lower()
@@ -32,7 +32,7 @@ def serve_static_file(handler, web_dir, url_path):
         with open(full_path, "rb") as f:
             content = f.read()
     except OSError:
-        handler.send_error(500, "Ошибка чтения файла")
+        handler.send_error(500, "Internal Server Error")
         return
 
     handler.send_response(200)

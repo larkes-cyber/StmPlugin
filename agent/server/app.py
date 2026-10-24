@@ -76,13 +76,13 @@ def make_request_handler(ctx):
             handler_func = ROUTES_POST.get(parsed.path)
 
             if not handler_func:
-                self.send_error(404, "Маршрут не найден")
+                self.send_error(404, "Not Found")
                 return
 
             try:
                 length = int(self.headers.get("Content-Length", 0))
                 if length > MAX_BODY_BYTES:
-                    self.send_error(413, "Слишком большой запрос")
+                    self.send_error(413, "Payload Too Large")
                     return
 
                 raw = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"

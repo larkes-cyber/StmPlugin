@@ -7,6 +7,8 @@ import time
 from urllib.parse import parse_qs, urlparse
 
 from ..ai import DOC_EXT, LLMClient, extract_text
+from ..chats import ChatNotFound
+from ..core import Logger, config
 
 UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "ste_ai_uploads")
 IMAGE_EXT = (".png", ".jpg", ".jpeg")
@@ -81,7 +83,7 @@ def handle_get_chats(ctx, handler, query):
 
 
 def handle_get_chat(ctx, handler, query):
-    chat_id = query.get("chat_id", [""])[0]
+    chat_id = query.get("chat_id", query.get("id", [""]))[0]
     if not chat_id:
         handler.send_json({"error": "Параметр chat_id обязателен"}, status=400)
         return

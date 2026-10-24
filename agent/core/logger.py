@@ -9,7 +9,7 @@ class PluginLogger(object):
 
     def set_name(self, name: Optional[str]) -> None:
         self.name = name
-        self.prefix = f"[{name}] " if name else ""
+        self.prefix = ("[%s] " % name) if name else ""
 
     def log(self, level: str, msg: str, *args) -> None:
         text = (msg % args) if args else str(msg)

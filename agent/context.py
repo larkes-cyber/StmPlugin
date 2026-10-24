@@ -1,7 +1,7 @@
 import os
 
 from UM.Resources import Resources
-from agent.core import config as default_config
+from .core import config as default_config
 
 from .agent import Agent
 from .events import EventBus

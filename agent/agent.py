@@ -3,7 +3,7 @@ import threading
 import time
 
 from .llm import LLMError
-from agent.core import Logger
+from .core import Logger
 
 MAX_STEPS = 40
 MAX_TOOL_RESULT_CHARS = 12000

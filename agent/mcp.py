@@ -1,6 +1,6 @@
 import json
 
-from agent.core import Logger
+from .core import Logger
 
 SUPPORTED_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 SERVER_INFO = {"name": "ste-slicer-ai-assistant", "version": "1.0.0"}

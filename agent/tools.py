@@ -1,7 +1,7 @@
 import threading
 import time
 
-from agent.core import Logger
+from .core import Logger
 
 
 class ToolError(Exception):

@@ -5,7 +5,7 @@ import traceback
 
 from UM.Application import Application
 
-from agent.core import Logger
+from .core import Logger
 
 DEFAULT_TIMEOUT = 120
 

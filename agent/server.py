@@ -11,6 +11,7 @@ from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .agent import AgentBusy
+from .chats import ChatNotFound
 from .documents import DOC_EXT, extract_text
 from .log import log, log_exception, shorten
 from .version import PLUGIN_DIR, plugin_version
@@ -174,10 +175,17 @@ def make_handler(ctx):
                     self._get_state()
                 elif url.path == "/api/system_prompt":
                     self._send_json(ctx.system_prompt.state())
+                elif url.path == "/api/chats":
+                    self._send_json(ctx.chats.listing())
+                elif url.path == "/api/chat":
+                    chat_id = parse_qs(url.query).get("id", [""])[0]
+                    self._send_json(ctx.chats.history(chat_id))
                 elif url.path == "/mcp":
                     self._send(405, b"", "text/plain", {"Allow": "POST"})
                 else:
                     self._send_static(url.path)
+            except ChatNotFound as error:
+                self._send_json({"error": str(error)}, 404)
             except Exception as error:
                 log_exception("GET %s failed" % url.path)
                 self._send_json({"error": str(error)}, 500)
@@ -185,8 +193,17 @@ def make_handler(ctx):
         def _get_events(self, query):
             since = int(query.get("since", ["0"])[0])
             wait = min(float(query.get("wait", ["20"])[0]), MAX_EVENTS_WAIT)
-            events = ctx.events.since(since, timeout=wait)
-            self._send_json({"events": events, "busy": ctx.agent.busy})
+            session = query.get("session", [""])[0]
+            if session and session != ctx.events.session:
+                events = []
+            else:
+                events = ctx.events.since(since, timeout=wait)
+            self._send_json({
+                "events": events,
+                "busy": ctx.agent.busy,
+                "running_chat": ctx.chats.running_id,
+                "session": ctx.events.session,
+            })
 
         def _get_config(self):
             data = ctx.config.public()
@@ -236,6 +253,8 @@ def make_handler(ctx):
 
             try:
                 self._route_post(path, body)
+            except ChatNotFound as error:
+                self._send_json({"error": str(error)}, 404)
             except ValueError as error:
                 self._send_json({"error": str(error)}, 400)
             except Exception as error:
@@ -260,14 +279,27 @@ def make_handler(ctx):
                 ctx.agent.stop()
                 ctx.review.cancel()
                 self._send_json({"ok": True})
-            elif path == "/api/reset":
-                ctx.agent.reset()
-                ctx.review.cancel()
-                self._send_json({"ok": True})
+            elif path.startswith("/api/chats/"):
+                self._post_chats(path[len("/api/chats/"):], data)
             elif path == "/api/config":
                 self._post_config(data)
             elif path == "/api/test_llm":
                 self._post_test_llm()
+            else:
+                self._send_json({"error": "not found"}, 404)
+
+        def _post_chats(self, action, data):
+            chat_id = data.get("chat_id")
+            if action == "new":
+                self._send_json({"chat": ctx.chats.create()})
+            elif action == "select":
+                ctx.chats.select(chat_id)
+                self._send_json({"ok": True})
+            elif action == "rename":
+                self._send_json({"chat": ctx.chats.rename(chat_id, data.get("title"))})
+            elif action == "delete":
+                ctx.chats.delete(chat_id)
+                self._send_json(ctx.chats.listing())
             else:
                 self._send_json({"error": "not found"}, 404)
 
@@ -312,7 +344,7 @@ def make_handler(ctx):
 
             images, files, documents = _collect_attachments(attachments)
             try:
-                ctx.agent.submit(text, images, files, documents)
+                ctx.agent.submit(text, images, files, documents, chat_id=data.get("chat_id"))
             except AgentBusy as error:
                 self._send_json({"error": str(error)}, 409)
                 return

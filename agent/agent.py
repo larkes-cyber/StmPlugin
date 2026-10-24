@@ -2,6 +2,7 @@ import json
 import threading
 import time
 
+from .chats import ChatManager, drop_unanswered_tool_calls, strip_images
 from .llm import LLMError
 from .log import log, log_exception, shorten
 
@@ -19,12 +20,13 @@ def _image_part(image_url):
 
 
 class Agent(object):
-    def __init__(self, config, registry, events, llm, system_prompt):
+    def __init__(self, config, registry, events, llm, system_prompt, chats=None):
         self._config = config
         self._system_prompt = system_prompt
         self._registry = registry
         self._events = events
         self._llm = llm
+        self._chats = chats if chats is not None else ChatManager(events)
         self._messages = []
         self._lock = threading.Lock()
         self._busy = False
@@ -34,48 +36,66 @@ class Agent(object):
     def busy(self):
         return self._busy
 
-    def reset(self):
-        log("i", "dialog reset (busy=%s, %d messages dropped)", self._busy, len(self._messages))
-        if self._busy:
-            self._cancel = True
-        self._messages = []
-        self._events.clear()
-
     def stop(self):
         log("i", "stop requested (busy=%s)", self._busy)
         if self._busy:
             self._cancel = True
 
-    def submit(self, text, images=None, files=None, documents=None):
-        with self._lock:
-            if self._busy:
-                raise AgentBusy("Агент ещё работает над предыдущим запросом")
-            self._busy = True
-            self._cancel = False
-
+    def submit(self, text, images=None, files=None, documents=None, chat_id=None):
         images = images or []
         files = files or []
         documents = documents or []
+        attachments = self._attachment_labels(images, files, documents)
+
+        with self._lock:
+            if self._busy:
+                raise AgentBusy(self._busy_message())
+            chat, note = self._chats.begin_run(chat_id, self._title_hint(text, images, files, documents))
+            self._messages = chat.messages
+            self._busy = True
+            self._cancel = False
 
         log(
             "i",
-            "user message: %s | files=%s docs=%s images=%d",
+            "user message [chat %s, %d messages before%s]: %s | files=%s docs=%s images=%d",
+            chat.id,
+            len(chat.messages),
+            ", shared scene note" if note else "",
             shorten(text, 300),
             [file["name"] for file in files],
             [document["name"] for document in documents],
             len(images),
         )
-        attachments = self._attachment_labels(images, files, documents)
         self._events.emit("user", text=text, attachments=attachments)
 
         thread = threading.Thread(
             target=self._run,
-            args=(text, images, files, documents),
+            args=(chat, text, images, files, documents, note),
             name="AIAssistantAgent",
         )
         thread.daemon = True
         thread.start()
         return thread
+
+    def _busy_message(self):
+        running_id = self._chats.running_id
+        if running_id is None:
+            return "Агент ещё работает над предыдущим запросом"
+        try:
+            title = self._chats.title(running_id)
+        except ValueError:
+            return "Агент ещё работает над предыдущим запросом"
+        return "Агент ещё работает в чате «%s» — дождитесь ответа или остановите его" % title
+
+    @staticmethod
+    def _title_hint(text, images, files, documents):
+        for line in (text or "").splitlines():
+            if line.strip():
+                return line
+        names = [document["name"] for document in documents] + [file["name"] for file in files]
+        if names:
+            return ", ".join(names)
+        return "Изображение" if images else ""
 
     @staticmethod
     def _attachment_labels(images, files, documents):
@@ -86,13 +106,14 @@ class Agent(object):
             labels.append("изображение %d" % number)
         return labels
 
-    def _user_message(self, text, images, files, documents):
+    def _user_message(self, text, images, files, documents, note=None):
+        parts = []
+        if note:
+            parts.append(note + "\n")
         if text:
-            parts = [text]
+            parts.append(text)
         elif documents:
-            parts = ["Задача описана в приложенном документе."]
-        else:
-            parts = [""]
+            parts.append("Задача описана в приложенном документе.")
 
         for document in documents:
             truncated_note = ""
@@ -120,26 +141,11 @@ class Agent(object):
             content.append(_image_part(image_url))
         return {"role": "user", "content": content}
 
-    def _strip_old_images(self):
-        for message in self._messages:
-            content = message.get("content")
-            if message.get("role") != "user" or not isinstance(content, list):
-                continue
-
-            texts = []
-            image_count = 0
-            for part in content:
-                if part.get("type") == "text":
-                    texts.append(part.get("text", ""))
-                elif part.get("type") == "image_url":
-                    image_count += 1
-            message["content"] = "\n".join(texts) + "\n[%d изображ. было приложено ранее]" % image_count
-
-    def _run(self, text, images, files, documents):
+    def _run(self, chat, text, images, files, documents, note=None):
         started_at = time.time()
         steps_done = 0
         try:
-            self._messages.append(self._user_message(text, images, files, documents))
+            self._messages.append(self._user_message(text, images, files, documents, note))
             tools = self._registry.openai_tools()
             prompt_kind = "custom" if self._system_prompt.is_custom() else "default"
             log("i", "system prompt: %s", prompt_kind)
@@ -150,7 +156,9 @@ class Agent(object):
                     log("i", "run cancelled at step %d", step)
                     self._events.emit("assistant", text="Остановлено пользователем.")
                     return
-                if self._step(step, tools):
+                finished = self._step(step, tools)
+                self._chats.checkpoint(chat)
+                if finished:
                     return
 
             log("w", "step limit %d reached", MAX_STEPS)
@@ -158,16 +166,20 @@ class Agent(object):
         except LLMError as error:
             log("e", "LLM error: %s", error)
             self._events.emit("error", message=str(error))
-            self._rollback_unanswered_tool_calls()
+            drop_unanswered_tool_calls(self._messages)
         except Exception as error:
             log_exception("Agent failed")
             self._events.emit("error", message="Внутренняя ошибка агента: %s" % error)
-            self._rollback_unanswered_tool_calls()
+            drop_unanswered_tool_calls(self._messages)
         finally:
-            log("i", "run finished: %d steps, %.1fs", steps_done, time.time() - started_at)
-            self._strip_old_images()
+            log("i", "run finished in chat %s: %d steps, %.1fs", chat.id, steps_done, time.time() - started_at)
+            strip_images(self._messages)
+            try:
+                self._chats.end_run(chat)
+            except Exception:
+                log_exception("chat %s: failed to finish run" % chat.id)
             self._busy = False
-            self._events.emit("status", state="idle")
+            self._events.emit("status", state="idle", chat_id=chat.id)
 
     def _step(self, step, tools):
         self._events.emit("status", state="thinking")
@@ -253,29 +265,3 @@ class Agent(object):
         for _, image_url in images:
             content.append(_image_part(image_url))
         return {"role": "user", "content": content}
-
-    def _rollback_unanswered_tool_calls(self):
-        while self._messages:
-            last_message = self._messages[-1]
-
-            if last_message.get("role") == "assistant" and last_message.get("tool_calls"):
-                self._messages.pop()
-                continue
-
-            if last_message.get("role") != "tool":
-                return
-
-            index = len(self._messages) - 1
-            answered_ids = set()
-            while index >= 0 and self._messages[index].get("role") == "tool":
-                answered_ids.add(self._messages[index].get("tool_call_id"))
-                index -= 1
-
-            if index < 0 or not self._messages[index].get("tool_calls"):
-                return
-
-            expected_ids = set(call.get("id") for call in self._messages[index]["tool_calls"])
-            if expected_ids.issubset(answered_ids):
-                return
-
-            del self._messages[index:]

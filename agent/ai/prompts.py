@@ -1,3 +1,8 @@
+import os
+
+PROMPT_FILE_NAME = "ai_assistant_system_prompt.txt"
+MAX_PROMPT_CHARS = 50000
+
 SYSTEM_PROMPT = """Ты — ИИ-технолог аддитивного производства внутри STE Slicer (Stereotech, форк Cura 3.6).
 Основной принтер для задач: Stereotech Hybrid 530 V5.2.4. Ты помогаешь новичку получить готовый проект
 и G-code: выбираешь режим печати (3D или 5D), профиль, материал, ключевые настройки, ориентацию
@@ -80,3 +85,59 @@ SYSTEM_PROMPT = """Ты — ИИ-технолог аддитивного про�
 «допущение» — для значений, выбранных без данных от пользователя. В конце — время печати и расход
 материала, пути к сохранённым файлам (если сохранял) и предупреждения (если есть).
 """
+
+
+class PromptManager(object):
+    def __init__(self, path):
+        self._path = path
+
+    @property
+    def path(self):
+        return self._path
+
+    def text(self):
+        custom = self._read_custom()
+        return custom if custom is not None else SYSTEM_PROMPT
+
+    def is_custom(self):
+        return self._read_custom() is not None
+
+    def state(self):
+        return {
+            "text": self.text(),
+            "default": SYSTEM_PROMPT,
+            "is_custom": self.is_custom(),
+            "path": self._path,
+        }
+
+    def save(self, new_text):
+        new_text = (new_text or "").strip()
+        if len(new_text) > MAX_PROMPT_CHARS:
+            raise ValueError("Limit exceeded: %d chars" % MAX_PROMPT_CHARS)
+
+        if not new_text or new_text == SYSTEM_PROMPT.strip():
+            self.reset()
+            return
+
+        folder = os.path.dirname(self._path)
+        if folder and not os.path.isdir(folder):
+            os.makedirs(folder, exist_ok=True)
+        with open(self._path, "w", encoding="utf-8") as f:
+            f.write(new_text)
+
+    def reset(self):
+        if os.path.exists(self._path):
+            try:
+                os.remove(self._path)
+            except OSError:
+                pass
+
+    def _read_custom(self):
+        if not os.path.isfile(self._path):
+            return None
+        try:
+            with open(self._path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                return content or None
+        except Exception:
+            return None

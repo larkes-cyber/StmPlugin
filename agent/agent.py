@@ -3,7 +3,7 @@ import threading
 import time
 
 from .chats import ChatManager, drop_unanswered_tool_calls, strip_images
-from .llm import LLMError
+from .ai import LLMError
 from .core import Logger
 
 MAX_STEPS = 40
@@ -50,17 +50,16 @@ class Agent(object):
         with self._lock:
             if self._busy:
                 raise AgentBusy(self._busy_message())
-            chat, note = self._chats.begin_run(chat_id, self._title_hint(text, images, files, documents))
+            chat = self._chats.begin_run(chat_id, self._title_hint(text, images, files, documents))
             self._messages = chat.messages
             self._busy = True
             self._cancel = False
 
         Logger.log(
             "i",
-            "user message [chat %s, %d messages before%s]: %s | files=%s docs=%s images=%d",
+            "user message [chat %s, %d messages before]: %s | files=%s docs=%s images=%d",
             chat.id,
             len(chat.messages),
-            ", shared scene note" if note else "",
             text,
             [file["name"] for file in files],
             [document["name"] for document in documents],
@@ -70,7 +69,7 @@ class Agent(object):
 
         thread = threading.Thread(
             target=self._run,
-            args=(chat, text, images, files, documents, note),
+            args=(chat, text, images, files, documents),
             name="AIAssistantAgent",
         )
         thread.daemon = True
@@ -106,10 +105,8 @@ class Agent(object):
             labels.append("изображение %d" % number)
         return labels
 
-    def _user_message(self, text, images, files, documents, note=None):
+    def _user_message(self, text, images, files, documents):
         parts = []
-        if note:
-            parts.append(note + "\n")
         if text:
             parts.append(text)
         elif documents:
@@ -141,11 +138,11 @@ class Agent(object):
             content.append(_image_part(image_url))
         return {"role": "user", "content": content}
 
-    def _run(self, chat, text, images, files, documents, note=None):
+    def _run(self, chat, text, images, files, documents):
         started_at = time.time()
         steps_done = 0
         try:
-            self._messages.append(self._user_message(text, images, files, documents, note))
+            self._messages.append(self._user_message(text, images, files, documents))
             tools = self._registry.openai_tools()
             prompt_kind = "custom" if self._system_prompt.is_custom() else "default"
             Logger.log("i", "system prompt: %s", prompt_kind)

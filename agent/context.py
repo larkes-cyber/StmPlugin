@@ -4,31 +4,31 @@ from UM.Resources import Resources
 from .core import config as default_config
 
 from .agent import Agent
-from .chats import CHATS_DIR_NAME, ChatManager
+from .ai import LLMClient, PromptManager, build_registry
+from .chats import ChatManager
 from .core import EventBus
-from .llm import LLMClient
 from .mcp import MCPServer
 from .review import ReviewGate
 from .server import start_server
 from .slicer import SlicerAPI
-from .system_prompt import PROMPT_FILE_NAME, SystemPromptStore
-from .tools import build_registry
 
 
 def _default_prompt_path():
-    return os.path.join(Resources.getDataStoragePath(), PROMPT_FILE_NAME)
+    return os.path.join(Resources.getDataStoragePath(), "ai_assistant_system_prompt.txt")
 
 
 class Context(object):
     def __init__(self, config=None, slicer_factory=SlicerAPI, llm=None, prompt_path=None, chats_dir=None):
         prompt_path = prompt_path or _default_prompt_path()
-        if chats_dir is None:
-            chats_dir = os.path.join(os.path.dirname(prompt_path), CHATS_DIR_NAME)
-
         self.config = config or default_config
+
+        if chats_dir is None:
+            chats_folder_name = self.config.get("chats_dir_name", "ai_assistant_chats")
+            chats_dir = os.path.join(os.path.dirname(prompt_path), chats_folder_name)
+
         self.events = EventBus()
         self.chats = ChatManager(self.events, chats_dir)
-        self.system_prompt = SystemPromptStore(prompt_path)
+        self.system_prompt = PromptManager(prompt_path)
         self.slicer = slicer_factory(self.events, self.config)
         self.review = ReviewGate(self.events, self.slicer)
         self.registry = build_registry(self.slicer, self.events, self.review)

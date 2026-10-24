@@ -3,7 +3,7 @@ import threading
 import time
 
 from .llm import LLMError
-from .log import log, log_exception, shorten
+from agent.core import Logger
 
 MAX_STEPS = 40
 MAX_TOOL_RESULT_CHARS = 12000
@@ -35,14 +35,14 @@ class Agent(object):
         return self._busy
 
     def reset(self):
-        log("i", "dialog reset (busy=%s, %d messages dropped)", self._busy, len(self._messages))
+        Logger.log("i", "dialog reset (busy=%s, %d messages dropped)", self._busy, len(self._messages))
         if self._busy:
             self._cancel = True
         self._messages = []
         self._events.clear()
 
     def stop(self):
-        log("i", "stop requested (busy=%s)", self._busy)
+        Logger.log("i", "stop requested (busy=%s)", self._busy)
         if self._busy:
             self._cancel = True
 
@@ -57,10 +57,10 @@ class Agent(object):
         files = files or []
         documents = documents or []
 
-        log(
+        Logger.log(
             "i",
             "user message: %s | files=%s docs=%s images=%d",
-            shorten(text, 300),
+            text,
             [file["name"] for file in files],
             [document["name"] for document in documents],
             len(images),
@@ -142,29 +142,29 @@ class Agent(object):
             self._messages.append(self._user_message(text, images, files, documents))
             tools = self._registry.openai_tools()
             prompt_kind = "custom" if self._system_prompt.is_custom() else "default"
-            log("i", "system prompt: %s", prompt_kind)
+            Logger.log("i", "system prompt: %s", prompt_kind)
 
             for step in range(1, MAX_STEPS + 1):
                 steps_done = step
                 if self._cancel:
-                    log("i", "run cancelled at step %d", step)
+                    Logger.log("i", "run cancelled at step %d", step)
                     self._events.emit("assistant", text="Остановлено пользователем.")
                     return
                 if self._step(step, tools):
                     return
 
-            log("w", "step limit %d reached", MAX_STEPS)
+            Logger.log("w", "step limit %d reached", MAX_STEPS)
             self._events.emit("assistant", text="Достигнут лимит шагов агента — уточните задачу или продолжите.")
         except LLMError as error:
-            log("e", "LLM error: %s", error)
+            Logger.log("e", "LLM error: %s", error)
             self._events.emit("error", message=str(error))
             self._rollback_unanswered_tool_calls()
         except Exception as error:
-            log_exception("Agent failed")
+            Logger.logException("Agent failed")
             self._events.emit("error", message="Внутренняя ошибка агента: %s" % error)
             self._rollback_unanswered_tool_calls()
         finally:
-            log("i", "run finished: %d steps, %.1fs", steps_done, time.time() - started_at)
+            Logger.log("i", "run finished: %d steps, %.1fs", steps_done, time.time() - started_at)
             self._strip_old_images()
             self._busy = False
             self._events.emit("status", state="idle")
@@ -179,7 +179,7 @@ class Agent(object):
         tool_calls = message.get("tool_calls") or []
 
         tool_names = [(call.get("function") or {}).get("name") for call in tool_calls]
-        log(
+        Logger.log(
             "d",
             "step %d: LLM %.2fs, tokens in/out=%s/%s, tool_calls=%s, text=%s",
             step,
@@ -187,7 +187,7 @@ class Agent(object):
             usage.get("prompt_tokens"),
             usage.get("completion_tokens"),
             tool_names,
-            shorten(content, 200),
+            content,
         )
 
         assistant_message = {"role": "assistant", "content": content or None}
@@ -232,7 +232,7 @@ class Agent(object):
         try:
             arguments = json.loads(raw_arguments)
         except ValueError:
-            log("w", "invalid JSON arguments for %s: %s", name, shorten(raw_arguments, 300))
+            Logger.log("w", "invalid JSON arguments for %s: %s", name, raw_arguments)
             return {"ok": False, "error": "Аргументы не являются корректным JSON"}
         return self._registry.call(name, arguments, source="agent", call_id=call.get("id"))
 

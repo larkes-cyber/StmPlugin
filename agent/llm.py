@@ -4,7 +4,7 @@ import time
 import urllib.error
 import urllib.request
 
-from .log import log
+from agent.core import Logger
 
 CHAT_PATH = "/chat/completions"
 REQUEST_TIMEOUT = 180
@@ -95,15 +95,15 @@ class LLMClient(object):
                 return self._send(request, options, attempt)
             except urllib.error.HTTPError as error:
                 body = error.read().decode("utf-8", "replace")[:800]
-                log("w", "LLM HTTP %d from %s: %s", error.code, url, body[:300])
+                Logger.log("w", "LLM HTTP %d from %s: %s", error.code, url, body[:300])
                 last_error = LLMError("LLM вернула HTTP %d: %s" % (error.code, body))
                 if error.code not in RETRY_STATUS_CODES:
                     raise last_error
             except urllib.error.URLError as error:
-                log("w", "LLM connection error %s: %s", url, error.reason)
+                Logger.log("w", "LLM connection error %s: %s", url, error.reason)
                 last_error = LLMError("Нет соединения с LLM (%s): %s" % (url, error.reason))
             except OSError as error:
-                log("w", "LLM error %s: %s", url, error)
+                Logger.log("w", "LLM error %s: %s", url, error)
                 last_error = LLMError("Ошибка обращения к LLM: %s" % error)
 
             time.sleep(1.5 * attempt)
@@ -112,12 +112,12 @@ class LLMClient(object):
 
     def _send(self, request, options, attempt):
         started_at = time.time()
-        log("d", "LLM request %s (attempt %d, %d bytes)", request.full_url, attempt, len(request.data))
+        Logger.log("d", "LLM request %s (attempt %d, %d bytes)", request.full_url, attempt, len(request.data))
 
         response = urllib.request.urlopen(request, **options)
         raw = response.read().decode("utf-8")
         elapsed = time.time() - started_at
-        log("d", "LLM response HTTP %s in %.2fs (%d chars)", response.status, elapsed, len(raw))
+        Logger.log("d", "LLM response HTTP %s in %.2fs (%d chars)", response.status, elapsed, len(raw))
 
         try:
             return json.loads(raw)

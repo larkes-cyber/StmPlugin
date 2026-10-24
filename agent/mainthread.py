@@ -5,7 +5,7 @@ import traceback
 
 from UM.Application import Application
 
-from .log import log
+from agent.core import Logger
 
 DEFAULT_TIMEOUT = 120
 
@@ -58,7 +58,7 @@ def run_on_main(func, *args, **kwargs):
     if not finished.wait(timeout):
         stack = _main_thread_stack()
         function_name = getattr(func, "__name__", func)
-        log("e", "main thread timeout (%ds) in %s. Main thread is stuck here:\n%s", timeout, function_name, stack)
+        Logger.log("e", "main thread timeout (%ds) in %s. Main thread is stuck here:\n%s", timeout, function_name, stack)
         raise MainThreadTimeout(
             "Главный поток слайсера не ответил за %d с (%s). "
             "Возможно, в слайсере открыт диалог. Полный стек — в stderr.log"

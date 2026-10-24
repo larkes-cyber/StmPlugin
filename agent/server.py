@@ -334,17 +334,26 @@ def make_handler(ctx):
     return Handler
 
 
-def start_server(ctx, port):
+def start_server(ctx, addr="127.0.0.1:8765"):
+    if ":" in str(addr):
+        host, port_str = str(addr).rsplit(":", 1)
+        try:
+            port = int(port_str)
+        except ValueError:
+            port = 8765
+    else:
+        host, port = str(addr or "127.0.0.1"), 8765
+
     handler = make_handler(ctx)
     try:
-        server = ChatServer(("127.0.0.1", int(port or 0)), handler)
+        server = ChatServer((host, port), handler)
     except OSError:
-        Logger.log("w", "port %s is busy, using a random one", port)
-        server = ChatServer(("127.0.0.1", 0), handler)
+        Logger.log("w", "address %s:%s is busy, using random port", host, port)
+        server = ChatServer((host, 0), handler)
 
     thread = threading.Thread(target=server.serve_forever, name="AIAssistantHTTP")
     thread.daemon = True
     thread.start()
 
-    Logger.log("i", "HTTP server listening on 127.0.0.1:%d (web dir: %s)", server.server_port, WEB_DIR)
+    Logger.log("i", "HTTP server listening on %s:%d (web dir: %s)", host, server.server_port, WEB_DIR)
     return server

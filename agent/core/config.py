@@ -57,7 +57,9 @@ class Config(object):
 
     def get(self, key: str, default: Any = None) -> Any:
         if key not in DEFAULT_SETTINGS:
-            self._logger.log("w", "Запрошен неизвестный параметр конфигурации '%s'", key)
+            self._logger.log(
+                "w", "Запрошен неизвестный параметр конфигурации '%s'", key
+            )
             return default
 
         expected_default = DEFAULT_SETTINGS[key]
@@ -115,8 +117,7 @@ class Config(object):
         data["version"] = self.version
         return data
 
-    def get_server_binding(self) -> tuple:
-        """Парсит 'server_addr' ('host:port') в кортеж (host, int_port)."""
+    def get_server_binding(self):
         raw = str(self.get("server_addr", "127.0.0.1:8765")).strip()
         if ":" in raw:
             host, port_str = raw.rsplit(":", 1)

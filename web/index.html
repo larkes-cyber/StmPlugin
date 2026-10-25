@@ -4,23 +4,24 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>STE AI-ассистент</title>
+  <link rel="icon" type="image/png" href="icons/steslicer-icon-32.png">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="topbar">
     <button id="btn-chats" class="ghost chats-toggle" title="Чаты проекта">☰</button>
-    <div class="brand"><span class="logo">◆</span> STE Slicer · <b>AI-ассистент</b></div>
+    <div class="brand"><img class="logo" src="icons/steslicer-icon-32.png" alt="Logo"> STE Slicer · <b>AI-ассистент</b></div>
     <div id="status" class="pill idle">Готов</div>
     <div class="actions">
-      <button id="btn-shot" class="ghost" title="Сохранить скриншот переписки (PNG)">📸 Скриншот</button>
-      <button id="btn-settings" class="ghost">⚙ Настройки</button>
+      <button id="btn-shot" class="ghost" title="Сохранить скриншот переписки (PNG)"><img class="action-icon" src="icons/viewmode.svg" alt=""> Скриншот</button>
+      <button id="btn-settings" class="ghost"><img class="settings-icon" src="icons/settings.svg" alt=""> Настройки</button>
     </div>
   </header>
 
   <div class="layout">
     <nav id="chats" class="chats">
       <h3>Чаты проекта</h3>
-      <button type="button" id="btn-new-chat" class="primary new-chat" title="Начать новый чат, прежние сохранятся">＋ Новый чат</button>
+      <button type="button" id="btn-new-chat" class="primary new-chat" title="Начать новый чат, прежние сохранятся"><img class="plus-icon" src="icons/plus.svg" alt=""> Новый чат</button>
       <ul id="chat-list" class="chat-list"></ul>
       <div class="muted small chats-note">
         Сцена и настройки слайсера общие для всех чатов, у каждого чата — своя история для ассистента.
@@ -55,7 +56,7 @@
         <div id="attachments" class="attachments"></div>
         <div class="row">
           <label class="attach" title="Прикрепить модель (STL/OBJ/3MF), фото (JPG/PNG) или ТЗ (DOCX/TXT)">
-            <input type="file" id="file-input" multiple accept=".stl,.obj,.3mf,.jpg,.jpeg,.png,.docx,.txt,.md" hidden>📎
+            <input type="file" id="file-input" multiple accept=".stl,.obj,.3mf,.jpg,.jpeg,.png,.docx,.txt,.md" hidden><img class="plus-icon" src="icons/plus.svg" alt="">
           </label>
           <textarea id="input" rows="2" placeholder="Например: «Кронштейн под нагрузку, PETG, без поддержек»"></textarea>
           <button type="submit" id="btn-send" class="primary">Отправить</button>
@@ -69,17 +70,6 @@
       <section>
         <h3>Слайсер сейчас</h3>
         <div id="state" class="state muted">Нет данных</div>
-      </section>
-      <section>
-        <h3>MCP-сервер</h3>
-        <div class="muted small">Те же инструменты доступны внешним агентам:</div>
-        <code id="mcp-url" class="mcp-url">—</code>
-        <div id="tool-count" class="muted small"></div>
-      </section>
-      <section>
-        <h3>Системный промпт</h3>
-        <div id="prompt-kind" class="muted small">—</div>
-        <button type="button" id="btn-prompt-side" class="ghost small">Редактировать</button>
       </section>
     </aside>
   </div>
@@ -96,10 +86,14 @@
       <label class="check"><input name="verify_ssl" type="checkbox"> Проверять SSL-сертификат</label>
       <h3>Результаты</h3>
       <label>Папка для results/<input name="output_dir" autocomplete="off"></label>
+      <h3>MCP-сервер</h3>
+      <div class="muted small">Те же инструменты доступны внешним агентам:</div>
+      <code id="mcp-url" class="mcp-url">—</code>
       <h3>Системный промпт</h3>
-      <div class="muted small">От промпта зависит, как ассистент выбирает режим, материал и настройки.</div>
+      <div id="prompt-kind" class="muted small">От промпта зависит, как ассистент выбирает режим, материал и настройки.</div>
       <button type="button" id="btn-prompt" class="ghost">Редактировать системный промпт</button>
       <div id="settings-msg" class="small"></div>
+      <div id="tool-count" class="settings-footer muted small"></div>
       <div class="dialog-actions">
         <button type="button" id="btn-test" class="ghost">Проверить подключение</button>
         <span class="spacer"></span>

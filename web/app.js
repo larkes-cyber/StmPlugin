@@ -154,6 +154,8 @@
 
   function formatInline(text) {
     return text
+      .replace(/⏱️?/g, '<img class="inline-icon" src="icons/print_time.svg" alt="">')
+      .replace(/🧵/g, '<img class="inline-icon" src="icons/dense.svg" alt="">')
       .replace(/`([^`]+)`/g, "<code>$1</code>")
       .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
       .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<i>$2</i>");
@@ -356,7 +358,7 @@
         <td><span class="old">${escapeHtml(formatValue(change.old))}</span> → <b>${escapeHtml(formatValue(change.new))}</b></td>
       </tr>`);
 
-    let html = '<div class="c-title">✎ Изменены настройки</div>';
+    let html = '<div class="c-title"><img class="message-icon" src="icons/pencil.svg" alt=""> Изменены настройки</div>';
     if (rows.length > 0) {
       html += `<table>${rows.join("")}</table>`;
     }
@@ -373,9 +375,9 @@
     const html = `
       <div class="c-title">✓ Слайсинг завершён</div>
       <div class="stats">
-        <span>⏱ ${escapeHtml(info.print_time || "—")}</span>
-        <span>🧵 ${escapeHtml(grams)}</span>
-        <span>📏 ${escapeHtml(meters)}</span>
+        <span><img class="stats-icon" src="icons/print_time.svg" alt=""> ${escapeHtml(info.print_time || "—")}</span>
+        <span><img class="stats-icon" src="icons/dense.svg" alt=""> ${escapeHtml(grams)}</span>
+        <span><img class="stats-icon" src="icons/scale_max.svg" alt=""> ${escapeHtml(meters)}</span>
       </div>`;
     appendToChat(createDiv("card result", html));
   }
@@ -384,7 +386,7 @@
     const caption = escapeHtml(event.caption || "Снимок сцены");
     const card = appendToChat(createDiv(
       "card snapshot",
-      `<div class="c-title">👁 ${caption} <span class="muted small">— агент смотрит на модель</span></div>`
+      `<div class="c-title"><img class="message-icon" src="icons/viewmode.svg" alt=""> ${caption} <span class="muted small">— агент смотрит на модель</span></div>`
     ));
 
     const image = document.createElement("img");
@@ -405,7 +407,7 @@
       const verdict = event.check.valid ? " ✓" : " ⚠ " + event.check.problems.join("; ");
       checkText = ` · слоёв: ${event.check.layers}${verdict}`;
     }
-    const html = `💾 ${kind}: <code>${escapeHtml(event.path)}</code>${escapeHtml(checkText)}`;
+    const html = `<img class="load-icon" src="icons/load.svg" alt=""> ${kind}: <code>${escapeHtml(event.path)}</code>${escapeHtml(checkText)}`;
     appendToChat(createDiv("card", html));
   }
 
@@ -1021,8 +1023,8 @@
         </div>
         <span class="ci-dot" title="Новый ответ"></span>
         <div class="ci-actions">
-          <button type="button" class="ci-btn" data-action="rename" title="Переименовать">✎</button>
-          <button type="button" class="ci-btn" data-action="delete" title="Удалить чат">✕</button>
+          <button type="button" class="ci-btn" data-action="rename" title="Переименовать"><img src="icons/pencil.svg" alt=""></button>
+          <button type="button" class="ci-btn" data-action="delete" title="Удалить чат"><img src="icons/close.svg" alt=""></button>
         </div>`;
       list.appendChild(item);
     });
@@ -1580,7 +1582,6 @@
     element("btn-cancel").addEventListener("click", () => element("settings").close());
     element("btn-test").addEventListener("click", testConnection);
     element("btn-prompt").addEventListener("click", openPromptEditor);
-    element("btn-prompt-side").addEventListener("click", openPromptEditor);
     element("btn-prompt-cancel").addEventListener("click", () => element("prompt-dialog").close());
     element("btn-prompt-reset").addEventListener("click", resetPrompt);
     element("prompt-form").addEventListener("submit", savePrompt);

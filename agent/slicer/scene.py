@@ -268,6 +268,10 @@ class SlicerScene(object):
     @on_main
     def delete_object(self, object_id):
         if object_id == "all":
+            # Защита от случайного сноса стола: удаляем только если в сцене один объект
+            nodes = self.object_nodes()
+            if len(nodes) > 1:
+                raise ToolError("В сцене несколько объектов, укажите конкретный object_id для удаления")
             _app().deleteAll()
             self._object_ids.clear()
             self._next_object_num = 1

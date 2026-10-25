@@ -231,6 +231,10 @@ class AgentRunner(object):
                     except Exception:
                         args = {}
 
+                    # Гарантируем, что перед вызовом инструмента сцена принадлежит этому чату:
+                    if self._slicer and hasattr(self._slicer, "sync_for_chat"):
+                        self._slicer.sync_for_chat(chat)
+
                     tool_outcome = self._registry.call(
                         name, args, source="agent", call_id=call_id, chat_id=chat_id
                     )

@@ -76,32 +76,48 @@ class SlicerAPI(object):
 
     def sync_for_chat(self, chat):
         """
-        Изоляция стола: гарантирует, что на столе находится модель и настройки
-        именно этого чата. Защищает от путаницы объектов при параллельной работе.
+        Изоляция стола: проверяет, соответствует ли модель на столе модели чата.
+        Не делает лишних перезагрузок, если модель уже на столе.
         """
         if chat is None:
             return
 
         with self._slicer_lock:
-            if self._active_chat_id == chat.id:
+            target_model = (chat.slicer_state or {}).get("model_path")
+            current_nodes = self.scene.object_nodes()
+
+            # Если модель этого чата уже загружена на столе — только обновляем настройки если нужно
+            if self._active_chat_id == chat.id and current_nodes:
                 return
 
-            Logger.log("i", "Переключение контекста стола на чат %s", chat.id)
-            # 1. Очищаем стол от предыдущих моделей
-            try:
-                self.scene.clear_scene()
-            except Exception as e:
-                Logger.log("w", "Ошибка очистки стола при переключении: %s", e)
+            # Проверяем: совпадает ли имя файла уже находящейся на столе детали с нужной
+            if target_model and current_nodes:
+                target_filename = os.path.basename(target_model)
+                current_names = [n.getName() for n in current_nodes]
+                if any(target_filename.startswith(name) or name.startswith(target_filename) for name in current_names):
+                    self._active_chat_id = chat.id
+                    if chat.slicer_state:
+                        self.settings.apply_chat_state(chat.slicer_state)
+                    return
 
-            # 2. Восстанавливаем модель этого чата
-            model_path = (chat.slicer_state or {}).get("model_path")
-            if model_path and os.path.isfile(model_path):
+            # Если стол пуст и у чата нет модели — ничего не делаем
+            if not target_model and not current_nodes:
+                self._active_chat_id = chat.id
+                return
+
+            Logger.log("i", "Смена модели стола под чат %s: %s", chat.id, target_model)
+            if current_nodes:
                 try:
-                    self.scene.load_model(model_path, chat_id=chat.id)
+                    self.scene.clear_scene()
+                except Exception as e:
+                    Logger.log("w", "Ошибка очистки стола при переключении: %s", e)
+
+            if target_model and os.path.isfile(target_model):
+                try:
+                    self.scene.load_model(target_model, chat_id=chat.id)
                 except Exception as e:
                     Logger.log("w", "Не удалось восстановить модель чата %s: %s", chat.id, e)
 
-            # 3. Восстанавливаем параметры печати
             if chat.slicer_state:
                 self.settings.apply_chat_state(chat.slicer_state)
 

@@ -76,17 +76,15 @@ class SlicerScene(object):
         if not nodes:
             raise ToolError("Сцена пуста — сначала загрузите модель (load_model)")
 
-        known_ids = ", ".join(self.object_id(node) for node in nodes)
-        if not object_id or object_id == "auto":
-            if len(nodes) == 1:
-                return nodes[0]
-            raise ToolError(
-                "В сцене несколько объектов, укажите object_id: %s" % known_ids
-            )
+        # Если на столе ровно одна деталь — всегда отдаем её
+        if len(nodes) == 1:
+            return nodes[0]
 
         for node in nodes:
             if object_id in (self.object_id(node), node.getName()):
                 return node
+
+        known_ids = ", ".join(self.object_id(node) for node in nodes)
         raise ToolError("Объект '%s' не найден. Доступны: %s" % (object_id, known_ids))
 
     def node_info(self, node):
@@ -288,8 +286,6 @@ class SlicerScene(object):
     def clear_scene(self):
         """Полная очистка стола от любых старых моделей."""
         _app().deleteAll()
-        self._object_ids.clear()
-        self._next_object_num = 1
         self._events.emit("scene_changed", {"action": "clear", "objects": []})
 
 

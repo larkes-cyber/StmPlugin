@@ -246,6 +246,7 @@ class AgentRunner(object):
                     except Exception:
                         args = {}
 
+                    needs_slicer = name in SLICER_EXCLUSIVE_TOOLS
                     try:
                         # Синхронизируем сцену только если инструмент действительно трогает стол:
                         if needs_slicer and self._slicer and hasattr(self._slicer, "sync_for_chat"):

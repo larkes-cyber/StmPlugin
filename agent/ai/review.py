@@ -20,7 +20,7 @@ class ReviewGate(object):
         self._slicer = slicer
         self._timeout = timeout
         self._lock = threading.Lock()
-        self._pending = {}  # ключ чата → ожидающая проверка
+        self._pending = {}  # ключ чата => ожидающая проверка
         self._review_count = 0
 
     @property

@@ -160,12 +160,19 @@
   function appendWarningMessage(text) {
     appendToChat(createDiv(
       "msg error",
-      `<img class="warning-icon" src="icons/warning.svg" alt=""> ${escapeHtml(text)}`
+      `<img class="warning-icon" src="icons/warning.svg" alt=""> ${replaceStatusEmoji(escapeHtml(text))}`
     ));
   }
 
-  function formatInline(text) {
+  function replaceStatusEmoji(text) {
     return text
+      .replace(/🧹/g, '<img class="inline-icon" src="icons/notice.svg" alt="">')
+      .replace(/[⌛⏳](?:️)?/g, '<img class="inline-icon" src="icons/print_time.svg" alt="">')
+      .replace(/⚠️?/g, '<img class="inline-icon" src="icons/warning.svg" alt="">');
+  }
+
+  function formatInline(text) {
+    return replaceStatusEmoji(text)
       .replace(/⏱️?/g, '<img class="inline-icon" src="icons/print_time.svg" alt="">')
       .replace(/🧵/g, '<img class="inline-icon" src="icons/dense.svg" alt="">')
       .replace(/`([^`]+)`/g, "<code>$1</code>")
@@ -367,7 +374,7 @@
     const rows = (event.changes || []).map((change) => `
       <tr>
         <td><b>${escapeHtml(change.label || change.key)}</b> <span class="muted small">${escapeHtml(change.key)}</span></td>
-        <td><span class="old">${escapeHtml(formatValue(change.old))}</span> → <b>${escapeHtml(formatValue(change.new))}</b></td>
+        <td><span class="old">${escapeHtml(formatValue(change.old))}</span> =&gt; <b>${escapeHtml(formatValue(change.new))}</b></td>
       </tr>`);
 
     let html = '<div class="c-title"><img class="message-icon" src="icons/pencil.svg" alt=""> Изменены настройки</div>';
@@ -414,12 +421,14 @@
 
   function renderSavedFile(event) {
     const kind = event.kind === "gcode" ? "G-code" : "Проект 3MF";
-    let checkText = "";
+    let checkHtml = "";
     if (event.check) {
-      const verdict = event.check.valid ? " ✓" : " ⚠ " + event.check.problems.join("; ");
-      checkText = ` · слоёв: ${event.check.layers}${verdict}`;
+      const verdict = event.check.valid
+        ? " ✓"
+        : ` <img class="warning-icon" src="icons/warning.svg" alt=""> ${escapeHtml(event.check.problems.join("; "))}`;
+      checkHtml = ` · слоёв: ${escapeHtml(event.check.layers)}${verdict}`;
     }
-    const html = `<img class="load-icon" src="icons/load.svg" alt=""> ${kind}: <code>${escapeHtml(event.path)}</code>${escapeHtml(checkText)}`;
+    const html = `<img class="load-icon" src="icons/load.svg" alt=""> ${kind}: <code>${escapeHtml(event.path)}</code>${checkHtml}`;
     appendToChat(createDiv("card", html));
   }
 
@@ -771,7 +780,7 @@
     const open = status.holder_chat && status.holder_chat !== view.chatId
       ? ' <button type="button" class="link-btn" data-open-chat="' + escapeHtml(status.holder_chat) + '">Открыть</button>'
       : "";
-    note.innerHTML = "⏳ " + escapeHtml(queueText(status)) + open;
+    note.innerHTML = '<img class="inline-icon" src="icons/print_time.svg" alt=""> ' + escapeHtml(queueText(status)) + open;
     note.classList.remove("hidden");
   }
 
@@ -1314,14 +1323,10 @@
   async function refreshState() {
     const box = element("state");
     try {
-      const data = await api("/api/state");
-      if (!data.ok) {
-        box.innerHTML = `<span class="muted">${escapeHtml(data.error)}</span>`;
-        return;
-      }
-      box.innerHTML = stateHtml(data.state);
+      const state = await api("/api/state");
+      box.innerHTML = stateHtml(state);
     } catch (error) {
-      box.textContent = "Слайсер занят, повторяю запрос…";
+      box.textContent = `Не удалось загрузить состояние слайсера: ${error.message}. Повторяю через 5 секунд…`;
       clearTimeout(stateRefreshTimer);
       stateRefreshTimer = setTimeout(refreshState, 5000);
     }

@@ -99,7 +99,7 @@ class ToolRegistry(object):
         call_id = self._next_call_id(source, call_id)
         arguments = args if args is not None else {}
 
-        Logger.log("d", "tool → %s [%s, %s] args=%s", name, source, call_id, arguments)
+        Logger.log("d", "tool call => %s [%s, %s] args=%s", name, source, call_id, arguments)
         self._emit(
             "tool_call",
             chat_id=chat_id,
@@ -122,11 +122,11 @@ class ToolRegistry(object):
         result_for_chat = _hide_image(outcome.get("result"))
         if outcome["ok"]:
             Logger.log(
-                "d", "tool ← %s ok %.2fs result=%s", name, duration, result_for_chat
+                "d", "tool result => %s ok %.2fs result=%s", name, duration, result_for_chat
             )
         else:
             Logger.log(
-                "w", "tool ← %s FAILED %.2fs: %s", name, duration, outcome.get("error")
+                "w", "tool result => %s FAILED %.2fs: %s", name, duration, outcome.get("error")
             )
 
         self._emit(
@@ -307,7 +307,7 @@ def _add_settings_tools(registry, slicer):
         properties={
             "changes": {
                 "type": "object",
-                "description": 'Словарь ключ → значение, например {"wall_line_count": 4}',
+                "description": 'Словарь ключ => значение, например {"wall_line_count": 4}',
                 "additionalProperties": True,
             },
             "reason": string_param(
@@ -384,7 +384,7 @@ def _add_settings_tools(registry, slicer):
     )
     registry.add(
         name="set_print_mode",
-        description="Переключить режим печати 3D ↔ 5D.",
+        description="Переключить режим печати 3D => 5D или 5D => 3D.",
         function=slicer.set_print_mode,
         properties={
             "mode": string_param("Режим", PRINT_MODES),

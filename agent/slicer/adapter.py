@@ -342,7 +342,7 @@ class SlicerAPI(object):
             else:
                 for change in result.get("applied") or []:
                     applied.append(
-                        "%s: %s → %s" % (change.get("label") or change.get("key"), change.get("old"), change.get("new"))
+                        "%s: %s => %s" % (change.get("label") or change.get("key"), change.get("old"), change.get("new"))
                     )
                 for error in result.get("errors") or []:
                     errors.append("%s: %s" % (error.get("key"), error.get("error")))

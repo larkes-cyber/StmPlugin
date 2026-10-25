@@ -258,6 +258,10 @@ class AgentRunner(object):
                                 chat.update_slicer_state({"material": args.get("material_id") or args.get("id")})
                             elif name == "set_print_mode" and args.get("mode"):
                                 chat.update_slicer_state({"print_mode": args["mode"]})
+                            elif name in ("start_slicing", "get_slicing_result") and isinstance(tool_outcome, dict):
+                                chat.update_slicer_state({"last_slicing_result": tool_outcome})
+                            elif name == "apply_orientation" and args.get("down"):
+                                chat.update_slicer_state({"down_vector": args["down"]})
                     finally:
                         if gate_ctx:
                             gate_ctx.__exit__(None, None, None)

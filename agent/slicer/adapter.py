@@ -121,6 +121,10 @@ class SlicerAPI(object):
             if target_model and os.path.isfile(target_model):
                 try:
                     self.scene.load_model(target_model, chat_id=chat.id)
+                    # Восстанавливаем ориентацию детали, если она была задана
+                    down = (chat.slicer_state or {}).get("down_vector")
+                    if down and len(down) == 3:
+                        self.scene.apply_orientation(down_vector=down)
                 except Exception as e:
                     Logger.log("w", "Не удалось восстановить модель чата %s: %s", chat.id, e)
 
@@ -306,8 +310,18 @@ class SlicerAPI(object):
     # 4. Экспорт через Uranium
     def export_gcode(self, path=None, model_name=None):
         with self._slicer_lock:
-            if self._slice["state"] != "done":
-                raise ToolError("Сначала выполните слайсинг (start_slicing)")
+            # Если статус не done, проверяем наличие готового gcode в ядре Cura
+            if self._slice.get("state") != "done":
+                try:
+                    res = run_on_main(self._result_dict)
+                    if res.get("print_time_s", 0) > 0:
+                        self._slice["state"] = "done"
+                    else:
+                        Logger.log("i", "export_gcode: запускаем слайсинг перед экспортом")
+                        self.start_slicing(wait=True)
+                except Exception:
+                    self.start_slicing(wait=True)
+
             return self.exporter.export_gcode(path, model_name)
 
     def save_project_3mf(self, path=None, model_name=None):

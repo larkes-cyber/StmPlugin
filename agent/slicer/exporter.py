@@ -87,14 +87,21 @@ class SlicerExporter(object):
         out_path = self.get_output_path(path, model_name, DEFAULT_GCODE_NAME)
         writer = PluginRegistry.getInstance().getPluginObject("GCodeWriter")
         if writer is None:
+            app = SteSlicerApplication.getInstance()
+            writer = app.getMeshFileHandler().getWriterByMimeType("text/x-gcode")
+        if writer is None:
             raise ToolError("Системный плагин Uranium 'GCodeWriter' не найден")
 
         app = SteSlicerApplication.getInstance()
         nodes = [app.getController().getScene().getRoot()]
 
         temp_path = out_path + ".part"
+        def _do_write():
+            with open(temp_path, "w", encoding="utf-8", newline="") as stream:
+                return writer.write(stream, nodes, MeshWriter.OutputMode.TextMode)
+
         try:
-            success = writer.write(temp_path, nodes, MeshWriter.OutputMode.TextMode)
+            success = run_on_main(_do_write)
             if (
                 not success
                 or not os.path.exists(temp_path)
@@ -130,8 +137,12 @@ class SlicerExporter(object):
 
         nodes = [app.getController().getScene().getRoot()]
         temp_path = out_path + ".part"
+        def _do_write():
+            with open(temp_path, "wb") as stream:
+                return writer.write(stream, nodes, MeshWriter.OutputMode.BinaryMode)
+
         try:
-            success = writer.write(temp_path, nodes, MeshWriter.OutputMode.BinaryMode)
+            success = run_on_main(_do_write)
             if (
                 not success
                 or not os.path.exists(temp_path)
@@ -148,6 +159,13 @@ class SlicerExporter(object):
                 except OSError:
                     pass
             raise
+
+        size_kb = round(os.path.getsize(out_path) / 1024.0, 1)
+        Logger.log("i", "Проект 3MF успешно сохранён в %s (%.1f КБ)", out_path, size_kb)
+        self._events.emit(
+            "file_saved", {"kind": "3mf", "path": out_path, "size_kb": size_kb}
+        )
+        return {"path": out_path, "size_kb": size_kb}
 
     def save_snapshot(self, scene, model_name=None, size=1024):
         """Сохраняет PNG-скриншот сцены в папку результатов."""

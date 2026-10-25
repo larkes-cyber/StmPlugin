@@ -44,13 +44,14 @@ class AgentRunner(object):
     пока он не завершится. Вызовы в слайсер сериализует его собственный замок.
     """
 
-    def __init__(self, config_obj, registry, events, llm, system_prompt, chats=None, review=None):
+    def __init__(self, config_obj, registry, events, llm, system_prompt, chats=None, review=None, slicer=None):
         self._config = config_obj or config
         self._system_prompt = system_prompt
         self._registry = registry
         self._events = events
         self._llm = llm
         self._review = review
+        self._slicer = slicer
         self._chats = chats if chats is not None else ChatManager(events)
 
         self._lock = threading.Lock()
@@ -158,6 +159,10 @@ class AgentRunner(object):
         messages = list(chat.messages)
 
         try:
+            # Изоляция стола: синхронизируем сцену и параметры под конкретный чат
+            if self._slicer and hasattr(self._slicer, "sync_for_chat"):
+                self._slicer.sync_for_chat(chat)
+
             user_msg = self._user_message(text, images, files, documents)
             messages.append(user_msg)
             chat.messages = messages
@@ -229,6 +234,17 @@ class AgentRunner(object):
                     tool_outcome = self._registry.call(
                         name, args, source="agent", call_id=call_id, chat_id=chat_id
                     )
+
+                    # Автоматически обновляем снимок параметров в паспорте чата
+                    if tool_outcome and tool_outcome.get("ok"):
+                        if name == "load_model" and args.get("path"):
+                            chat.update_slicer_state({"model_path": args["path"]})
+                        elif name == "set_settings" and args.get("changes"):
+                            chat.update_slicer_state({"settings": args["changes"]})
+                        elif name == "set_material" and (args.get("material_id") or args.get("id")):
+                            chat.update_slicer_state({"material": args.get("material_id") or args.get("id")})
+                        elif name == "set_print_mode" and args.get("mode"):
+                            chat.update_slicer_state({"print_mode": args["mode"]})
 
                     result_text = json.dumps(to_jsonable(tool_outcome), ensure_ascii=False)
                     if len(result_text) > MAX_TOOL_RESULT_CHARS:

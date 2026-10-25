@@ -48,6 +48,7 @@ class Context(object):
             self.system_prompt,
             self.chats,
             review=self.review,
+            slicer=self.slicer,
         )
         self.server = None
 

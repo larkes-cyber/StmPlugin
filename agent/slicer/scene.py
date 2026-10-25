@@ -126,7 +126,7 @@ class SlicerScene(object):
             "z": stack.getProperty("machine_height", "value"),
         }
 
-    def load_model(self, path):
+    def load_model(self, path, chat_id=None):
         path = os.path.abspath(os.path.expanduser(str(path)))
         if not os.path.isfile(path):
             raise ToolError("Файл не найден: %s" % path)
@@ -173,7 +173,7 @@ class SlicerScene(object):
             ]
         )
         Logger.log("i", "Модель загружена: %s", objects)
-        self._events.emit("scene_changed", {"action": "load", "objects": objects})
+        self._events.emit("scene_changed", {"action": "load", "objects": objects}, chat_id=chat_id)
         return {"loaded": objects, "file": path}
 
     @on_main
@@ -267,11 +267,26 @@ class SlicerScene(object):
 
     @on_main
     def delete_object(self, object_id):
+        if object_id == "all":
+            _app().deleteAll()
+            self._object_ids.clear()
+            self._next_object_num = 1
+            self._events.emit("scene_changed", {"action": "delete_all", "objects": []})
+            return {"deleted": "all"}
+
         node = self.find_node(object_id)
         info = self.node_info(node)
         RemoveSceneNodeOperation(node).push()
         self._events.emit("scene_changed", {"action": "delete", "objects": [info]})
         return {"deleted": info}
+
+    @on_main
+    def clear_scene(self):
+        """Полная очистка стола от любых старых моделей."""
+        _app().deleteAll()
+        self._object_ids.clear()
+        self._next_object_num = 1
+        self._events.emit("scene_changed", {"action": "clear", "objects": []})
 
 
     def arrange_all(self):

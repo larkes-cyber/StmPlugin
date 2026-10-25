@@ -55,6 +55,7 @@ class SlicerAPI(object):
         self.exporter = SlicerExporter(events)
 
         self._backend = None
+        self._active_chat_id = None
         self._slice = {
             "state": "idle",
             "progress": 0.0,
@@ -68,13 +69,54 @@ class SlicerAPI(object):
     def lock(self):
         return self._slicer_lock
 
+    @property
+    def active_chat_id(self):
+        with self._slicer_lock:
+            return self._active_chat_id
+
+    def sync_for_chat(self, chat):
+        """
+        Изоляция стола: гарантирует, что на столе находится модель и настройки
+        именно этого чата. Защищает от путаницы объектов при параллельной работе.
+        """
+        if chat is None:
+            return
+
+        with self._slicer_lock:
+            if self._active_chat_id == chat.id:
+                return
+
+            Logger.log("i", "Переключение контекста стола на чат %s", chat.id)
+            # 1. Очищаем стол от предыдущих моделей
+            try:
+                self.scene.clear_scene()
+            except Exception as e:
+                Logger.log("w", "Ошибка очистки стола при переключении: %s", e)
+
+            # 2. Восстанавливаем модель этого чата
+            model_path = (chat.slicer_state or {}).get("model_path")
+            if model_path and os.path.isfile(model_path):
+                try:
+                    self.scene.load_model(model_path, chat_id=chat.id)
+                except Exception as e:
+                    Logger.log("w", "Не удалось восстановить модель чата %s: %s", chat.id, e)
+
+            # 3. Восстанавливаем параметры печати
+            if chat.slicer_state:
+                self.settings.apply_chat_state(chat.slicer_state)
+
+            self._active_chat_id = chat.id
+
     # 1. Методы сцены
-    def load_model(self, path):
+    def load_model(self, path, chat_id=None):
         resolved = resolve_model_path(path)
         if resolved != path:
             Logger.log("d", "load_model: %s -> %s", path, resolved)
         with self._slicer_lock:
-            return self.scene.load_model(resolved)
+            result = self.scene.load_model(resolved, chat_id=chat_id)
+            if chat_id:
+                self._active_chat_id = chat_id
+            return result
 
     def list_objects(self):
         with self._slicer_lock:

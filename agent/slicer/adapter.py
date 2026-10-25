@@ -286,9 +286,22 @@ class SlicerAPI(object):
         return status
 
     def get_slicing_result(self):
-        if self._slice["state"] != "done":
-            raise ToolError("Нет готового результата — запустите start_slicing")
-        return run_on_main(self._result_dict)
+        # 1. Если статус уже done
+        if self._slice.get("state") == "done":
+            return run_on_main(self._result_dict)
+
+        # 2. Проверяем, есть ли готовый результат прямо в ядре Cura
+        try:
+            res = run_on_main(self._result_dict)
+            if res.get("print_time_s", 0) > 0:
+                self._slice["state"] = "done"
+                return res
+        except Exception:
+            pass
+
+        # 3. Если нарезка еще не запускалась — автоматически запускаем и возвращаем результат
+        Logger.log("i", "get_slicing_result: слайсинг не был запущен, запускаем автоматически")
+        return self.start_slicing(wait=True)
 
     # 4. Экспорт через Uranium
     def export_gcode(self, path=None, model_name=None):

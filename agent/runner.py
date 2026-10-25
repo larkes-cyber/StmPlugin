@@ -231,24 +231,33 @@ class AgentRunner(object):
                     except Exception:
                         args = {}
 
-                    # Гарантируем, что перед вызовом инструмента сцена принадлежит этому чату:
-                    if self._slicer and hasattr(self._slicer, "sync_for_chat"):
-                        self._slicer.sync_for_chat(chat)
+                    # Эксклюзивная очередь к столу и слайсеру:
+                    gate_ctx = self._slicer.gate(chat_id) if hasattr(self._slicer, "gate") else None
+                    if gate_ctx:
+                        gate_ctx.__enter__()
 
-                    tool_outcome = self._registry.call(
-                        name, args, source="agent", call_id=call_id, chat_id=chat_id
-                    )
+                    try:
+                        # Гарантируем, что перед вызовом инструмента сцена принадлежит этому чату:
+                        if self._slicer and hasattr(self._slicer, "sync_for_chat"):
+                            self._slicer.sync_for_chat(chat)
 
-                    # Автоматически обновляем снимок параметров в паспорте чата
-                    if tool_outcome and tool_outcome.get("ok"):
-                        if name == "load_model" and args.get("path"):
-                            chat.update_slicer_state({"model_path": args["path"]})
-                        elif name == "set_settings" and args.get("changes"):
-                            chat.update_slicer_state({"settings": args["changes"]})
-                        elif name == "set_material" and (args.get("material_id") or args.get("id")):
-                            chat.update_slicer_state({"material": args.get("material_id") or args.get("id")})
-                        elif name == "set_print_mode" and args.get("mode"):
-                            chat.update_slicer_state({"print_mode": args["mode"]})
+                        tool_outcome = self._registry.call(
+                            name, args, source="agent", call_id=call_id, chat_id=chat_id
+                        )
+
+                        # Автоматически обновляем снимок параметров в паспорте чата
+                        if tool_outcome and tool_outcome.get("ok"):
+                            if name == "load_model" and args.get("path"):
+                                chat.update_slicer_state({"model_path": args["path"]})
+                            elif name == "set_settings" and args.get("changes"):
+                                chat.update_slicer_state({"settings": args["changes"]})
+                            elif name == "set_material" and (args.get("material_id") or args.get("id")):
+                                chat.update_slicer_state({"material": args.get("material_id") or args.get("id")})
+                            elif name == "set_print_mode" and args.get("mode"):
+                                chat.update_slicer_state({"print_mode": args["mode"]})
+                    finally:
+                        if gate_ctx:
+                            gate_ctx.__exit__(None, None, None)
 
                     result_text = json.dumps(to_jsonable(tool_outcome), ensure_ascii=False)
                     if len(result_text) > MAX_TOOL_RESULT_CHARS:

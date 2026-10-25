@@ -10,6 +10,7 @@ from ..core import Logger, config, on_main, run_on_main
 from ..core.dispatcher import main_waits_aborted
 from ..uploads import resolve_model_path
 from .exporter import SlicerExporter
+from .gate import SlicerGate
 from .scene import SlicerScene
 from .settings import MODE_LABELS, SlicerSettings
 
@@ -46,7 +47,8 @@ class SlicerAPI(object):
         self._events = events
         self._config = config_obj or config
 
-        # Тот самый мьютекс защиты сцены и настроек от Data Race:
+        # Честная очередь к столу и слайсеру:
+        self._gate = SlicerGate(events)
         self._slicer_lock = threading.Lock()
 
         # Подсистемы
@@ -64,6 +66,10 @@ class SlicerAPI(object):
             "finished": None,
         }
         self._last_progress_emit = 0.0
+
+    @property
+    def gate(self):
+        return self._gate
 
     @property
     def lock(self):

@@ -542,6 +542,7 @@ def _add_analysis_tools(registry, slicer):
             "size": integer_param(
                 "Размер снимка в пикселях, 128–1024 (по умолчанию 512)"
             ),
+            "chat_id": string_param("ID текущего чата"),
         },
         group="analysis",
     )

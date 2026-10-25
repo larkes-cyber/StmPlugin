@@ -298,9 +298,10 @@ def _score(metrics, volume, max_dimension, total_area):
     height_share = metrics["height_mm"] / max(max_dimension, 1.0)
     contact_share = min(metrics["bed_contact_mm2"] / max(total_area * 0.05, 1.0), 1.0)
 
-    score = support_share + 0.2 * height_share - 0.3 * contact_share
+    # Приоритет: минимум поддержек + минимальная высота Z (деталь лежит плашмя) + максимальный контакт со столом
+    score = support_share + 0.6 * height_share - 0.8 * contact_share
     if metrics["bed_contact_mm2"] < 25.0:
-        score += 0.5
+        score += 1.0
     return score
 
 

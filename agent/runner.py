@@ -246,12 +246,6 @@ class AgentRunner(object):
                     except Exception:
                         args = {}
 
-                    # Захватываем стол ТОЛЬКО для физических инструментов, требующих сцену Cura:
-                    needs_slicer = name in SLICER_EXCLUSIVE_TOOLS
-                    gate_ctx = self._slicer.gate(chat_id) if (needs_slicer and hasattr(self._slicer, "gate")) else None
-                    if gate_ctx:
-                        gate_ctx.__enter__()
-
                     try:
                         # Синхронизируем сцену только если инструмент действительно трогает стол:
                         if needs_slicer and self._slicer and hasattr(self._slicer, "sync_for_chat"):
@@ -278,9 +272,9 @@ class AgentRunner(object):
                                 chat.update_slicer_state({"last_slicing_result": tool_outcome})
                             elif name == "apply_orientation" and args.get("down"):
                                 chat.update_slicer_state({"down_vector": args["down"]})
-                    finally:
-                        if gate_ctx:
-                            gate_ctx.__exit__(None, None, None)
+                    except Exception as err:
+                        Logger.logException("Ошибка выполнения инструмента %s: %s", name, err)
+                        tool_outcome = {"ok": False, "error": str(err)}
 
                     result_text = json.dumps(to_jsonable(tool_outcome), ensure_ascii=False)
                     if len(result_text) > MAX_TOOL_RESULT_CHARS:

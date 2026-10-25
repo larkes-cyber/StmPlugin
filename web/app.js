@@ -694,6 +694,9 @@
   }
 
   function statusText(state, tool) {
+    if (state === "waiting_slicer") {
+      return "Ожидает очереди к слайсеру…";
+    }
     if (state === "thinking") {
       return "Думает…";
     }
@@ -735,6 +738,14 @@
   }
 
   function handleStatusEvent(event) {
+    if (event.chat_id) {
+      if (event.state === "waiting_slicer") {
+        chatWaitStates[event.chat_id] = true;
+      } else {
+        delete chatWaitStates[event.chat_id];
+      }
+      renderChatList();
+    }
     if (event.chat_id && event.chat_id !== view.chatId) {
       return;
     }
@@ -848,7 +859,7 @@
       return;
     }
     if (event.type === "slice_progress") {
-      if (isOpenChatEvent(event) && sliceOpen) {
+      if (isOpenChatEvent(event)) {
         setSliceBar("processing", event.progress);
       }
       return;
@@ -990,7 +1001,12 @@
     return `${date.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })} ${time}`;
   }
 
+  let chatWaitStates = {}; // chat_id -> boolean
+
   function chatMetaHtml(chat) {
+    if (chatWaitStates[chat.id]) {
+      return "⏳ ждёт очередь";
+    }
     if (runningIds.has(chat.id) || chat.running) {
       return '<span class="spin"></span> работает';
     }
@@ -1079,6 +1095,7 @@
 
   function showHistory(history) {
     resetChat();
+    setSliceBar("idle", 0);
     stickToBottom = true;
     if (history.events.length === 0 && (history.chat.running || !history.chat.empty)) {
       element("messages").innerHTML = "";

@@ -269,12 +269,18 @@ class SlicerSettings(object):
         else:
             custom_group = None
             for group in quality_manager.getQualityChangesGroups(g_stack) or []:
-                if _group_name(group) == name:
+                if hasattr(group, "name") and group.name == name:
                     custom_group = group
                     break
             if custom_group is None:
                 raise ToolError("Профиль '%s' не найден" % name)
-            machine_manager.setQualityChangesGroup(custom_group)
+            try:
+                machine_manager.setQualityChangesGroup(custom_group)
+            except AttributeError:
+                # В Uranium 3.6 setQualityChangesGroup ожидает объект или переключается через quality_type
+                quality_type = getattr(custom_group, "quality_type", None)
+                if quality_type:
+                    machine_manager.setQualityGroupByQualityType(quality_type)
 
         active = self._active_quality()
         self._events.emit("profile_changed", {"what": "quality", "value": active})

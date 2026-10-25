@@ -3,6 +3,8 @@ import math
 import os
 import time
 
+import numpy
+
 from PyQt5.QtCore import QBuffer, QUrl
 from steslicer.Snapshot import Snapshot
 from steslicer.SteSlicerApplication import SteSlicerApplication
@@ -38,6 +40,7 @@ def _round(val, digits=2):
 class SlicerScene(object):
     def __init__(self, events):
         self._events = events
+        self._suggestions = {}
         self._object_ids = {}
         self._next_object_num = 1
 
@@ -102,7 +105,7 @@ class SlicerScene(object):
                 "y": _round(-box.center.z),
             },
             "bottom_z_mm": _round(box.bottom),
-            "on_plate": abs(box.bottom) < 0.05,
+            "on_plate": bool(abs(float(box.bottom)) < 0.05),
             "scale_pct": {
                 "x": _round(scale.x * 100),
                 "y": _round(scale.z * 100),
@@ -278,10 +281,43 @@ class SlicerScene(object):
         self._events.emit("scene_changed", {"action": "arrange", "objects": res["objects"]})
         return res
 
+    def plate_triangles(self, node):
+        """Треугольники объекта в координатах стола: Z вверх, миллиметры."""
+        from .geometry import scene_to_plate
+
+        chunks = []
+        for child in DepthFirstIterator(node):
+            triangles = self._world_triangles(child)
+            if triangles is not None:
+                chunks.append(triangles)
+        if not chunks:
+            raise ToolError("У объекта нет полигональной сетки")
+        return scene_to_plate(numpy.concatenate(chunks))
+
+    def remember_suggestions(self, object_id, candidates):
+        self._suggestions[object_id] = list(candidates or [])
+
+    @staticmethod
+    def _world_triangles(node):
+        from .geometry import indexed_triangles, transform_triangles
+
+        mesh = node.getMeshData()
+        if mesh is None:
+            return None
+        triangles = indexed_triangles(mesh.getVertices(), mesh.getIndices())
+        if triangles is None:
+            return None
+        matrix = node.getWorldTransformation().getData()
+        return transform_triangles(triangles, matrix)
+
     @on_main
-    def apply_orientation(self, object_id=None, down_vector=None):
+    def apply_orientation(self, object_id=None, down_vector=None, rank=None):
+        if not down_vector and rank is not None:
+            down_vector = self._suggested_down(object_id, rank)
         if not down_vector or len(down_vector) != 3:
-            raise ToolError("down_vector должен быть списком из 3 чисел")
+            raise ToolError(
+                "Нужен вектор down из трёх чисел или rank из последнего suggest_orientations"
+            )
         from .geometry import rotation_to_down, plate_to_scene_vector
         axis, angle = rotation_to_down(down_vector)
         node = self.find_node(object_id)
@@ -292,6 +328,20 @@ class SlicerScene(object):
         info = self.node_info(node)
         self._events.emit("scene_changed", {"action": "orient", "objects": [info]})
         return {"object": info, "angle": round(angle, 1)}
+
+    def _suggested_down(self, object_id, rank):
+        node = self.find_node(object_id)
+        candidates = self._suggestions.get(self.object_id(node)) or []
+        try:
+            index = int(rank) - 1
+        except (TypeError, ValueError):
+            index = -1
+        if index < 0 or index >= len(candidates):
+            raise ToolError(
+                "Нет варианта %s. Сначала вызовите suggest_orientations." % rank
+            )
+        return candidates[index]["down"]
+
     def get_scene_snapshot(self, size=DEFAULT_SNAPSHOT_SIZE):
         size = max(128, min(int(size or DEFAULT_SNAPSHOT_SIZE), 1024))
         png_data = run_on_main(lambda: self._snapshot_png(size))

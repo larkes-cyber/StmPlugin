@@ -18,6 +18,36 @@ def _app():
     return SteSlicerApplication.getInstance()
 
 
+def _group_name(group):
+    if isinstance(group, str):
+        return group
+    name = getattr(group, "name", None)
+    return name if name else str(group)
+
+
+def _group_available(group):
+    if isinstance(group, str):
+        return True
+    return bool(getattr(group, "is_available", True))
+
+
+def _search_rank(key, label, words):
+    key_text = key.lower()
+    label_text = label.lower()
+    query = " ".join(words)
+    if not query:
+        return 5
+    if key_text == query:
+        return 0
+    if key_text.startswith(query):
+        return 1
+    if any(key_text == word or key_text.startswith(word + "_") for word in words):
+        return 2
+    if query in label_text:
+        return 3
+    return 4
+
+
 def _jsonable(value):
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
@@ -124,32 +154,38 @@ class SlicerSettings(object):
     @on_main
     def search_settings(self, query, limit=25):
         g_stack = self.global_stack()
-        words = str(query).lower().split()
-        limit = int(limit or 25)
+        words = [word for word in str(query).lower().split() if word]
+        limit = max(1, min(int(limit or 12), 15))
 
         found = []
-        for key in sorted(g_stack.getAllKeys()):
+        for key in g_stack.getAllKeys():
             setting_type = g_stack.getProperty(key, "type")
             if setting_type in (None, "category"):
                 continue
 
             label = str(g_stack.getProperty(key, "label") or "")
             searchable_text = (key + " " + label).lower()
-            if all(word in searchable_text for word in words):
-                stack, scope = self.stack_for(key)
-                found.append(
-                    {
-                        "key": key,
-                        "label": label,
-                        "type": setting_type,
-                        "value": _jsonable(stack.getProperty(key, "value")),
-                        "unit": g_stack.getProperty(key, "unit") or "",
-                        "scope": scope,
-                    }
-                )
-            if len(found) >= limit:
-                break
-        return {"query": query, "results": found}
+            if words and not all(word in searchable_text for word in words):
+                continue
+            stack, scope = self.stack_for(key)
+            found.append(
+                {
+                    "key": key,
+                    "label": label,
+                    "type": setting_type,
+                    "value": _jsonable(stack.getProperty(key, "value")),
+                    "unit": g_stack.getProperty(key, "unit") or "",
+                    "scope": scope,
+                    "_rank": _search_rank(key, label, words),
+                }
+            )
+
+        found.sort(key=lambda item: (item["_rank"], item["key"]))
+        results = []
+        for item in found[:limit]:
+            item.pop("_rank", None)
+            results.append(item)
+        return {"query": query, "results": results}
 
     @on_main
     def set_settings(self, changes, reason=""):
@@ -200,13 +236,13 @@ class SlicerSettings(object):
             group = groups[quality_type]
             quality_profiles.append({
                 "quality_type": quality_type,
-                "name": group.name,
-                "available": bool(group.is_available),
+                "name": _group_name(group) or quality_type,
+                "available": _group_available(group),
             })
 
         custom_profiles = []
         for group in quality_manager.getQualityChangesGroups(g_stack) or []:
-            custom_profiles.append({"name": group.name})
+            custom_profiles.append({"name": _group_name(group)})
 
         return {
             "active": self._active_quality(),
@@ -223,17 +259,17 @@ class SlicerSettings(object):
 
         target_type = None
         for quality_type, group in groups.items():
-            if name in (quality_type, group.name):
+            if name in (quality_type, _group_name(group)):
                 target_type = quality_type
 
         if target_type is not None:
-            if not groups[target_type].is_available:
+            if not _group_available(groups[target_type]):
                 raise ToolError("Профиль %s недоступен для текущего материала/сопла" % name)
             machine_manager.setQualityGroupByQualityType(target_type)
         else:
             custom_group = None
             for group in quality_manager.getQualityChangesGroups(g_stack) or []:
-                if group.name == name:
+                if _group_name(group) == name:
                     custom_group = group
                     break
             if custom_group is None:

@@ -27,31 +27,38 @@ class ReviewGate(object):
             return None
         return pending["id"]
 
-    def request(self, summary=""):
+    def request(self, summary="", chat_id=None):
         proposal = self._slicer.review_proposal()
-        pending = self._open_review()
+        pending = self._open_review(chat_id)
         review_id = pending["id"]
 
-        Logger.log("i", "review %s requested", review_id)
-        self._events.emit("review_requested", review_id=review_id, summary=summary, proposal=proposal)
+        Logger.log("i", "review %s requested (чат %s)", review_id, chat_id or "-")
+        self._emit(
+            pending,
+            "review_requested",
+            review_id=review_id,
+            summary=summary,
+            proposal=proposal,
+        )
 
         answered = pending["answered"].wait(self._timeout)
         self._close_review(pending)
 
         if not answered:
             Logger.log("w", "review %s timed out", review_id)
-            self._events.emit("review_closed", review_id=review_id, status="timeout")
+            self._emit(pending, "review_closed", review_id=review_id, status="timeout")
             raise ToolError("Пользователь не ответил за %d мин" % (self._timeout // 60))
 
         answer = pending["answer"]
         if answer["cancelled"]:
             Logger.log("i", "review %s cancelled", review_id)
-            self._events.emit("review_closed", review_id=review_id, status="cancelled")
+            self._emit(pending, "review_closed", review_id=review_id, status="cancelled")
             raise ToolError("Пользователь остановил проверку параметров")
 
         result = self._slicer.apply_review_changes(answer["changes"])
         Logger.log("i", "review %s approved: %s", review_id, result)
-        self._events.emit(
+        self._emit(
+            pending,
             "review_closed",
             review_id=review_id,
             status="approved",
@@ -81,16 +88,18 @@ class ReviewGate(object):
             }
             pending["answered"].set()
 
-    def cancel(self):
+    def cancel(self, chat_id=None):
         with self._lock:
             pending = self._pending
             if pending is None:
+                return
+            if chat_id and pending.get("chat_id") != chat_id:
                 return
 
             pending["answer"] = {"cancelled": True, "changes": {}, "comment": ""}
             pending["answered"].set()
 
-    def _open_review(self):
+    def _open_review(self, chat_id=None):
         with self._lock:
             if self._pending is not None:
                 raise ToolError("Уже ждём ответа пользователя на предыдущую проверку")
@@ -98,6 +107,7 @@ class ReviewGate(object):
             self._review_count += 1
             self._pending = {
                 "id": "review_%d" % self._review_count,
+                "chat_id": chat_id,
                 "answered": threading.Event(),
                 "answer": None,
             }
@@ -107,3 +117,10 @@ class ReviewGate(object):
         with self._lock:
             if self._pending is pending:
                 self._pending = None
+
+    def _emit(self, pending, event_type, **data):
+        chat_id = pending.get("chat_id")
+        if chat_id:
+            self._events.emit(event_type, data, chat_id=chat_id)
+        else:
+            self._events.emit(event_type, data)

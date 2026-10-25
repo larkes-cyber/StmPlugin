@@ -1,18 +1,17 @@
 import base64
-import json
 import os
 import re
-import tempfile
 import time
 from urllib.parse import parse_qs, urlparse
 
 from ..ai import DOC_EXT, LLMClient, extract_text
 from ..chats import ChatNotFound
-from ..core import Logger, config
+from ..core import Logger
+from ..uploads import save_upload
 
-UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "ste_ai_uploads")
 IMAGE_EXT = (".png", ".jpg", ".jpeg")
 MODEL_EXT = (".stl", ".obj", ".3mf")
+MAX_EVENTS_WAIT = 25.0
 
 
 def _safe_filename(name):
@@ -24,17 +23,6 @@ def _safe_filename(name):
 def _image_data_url(extension, raw):
     mime_type = "image/png" if extension == ".png" else "image/jpeg"
     return "data:%s;base64,%s" % (mime_type, base64.b64encode(raw).decode("ascii"))
-
-
-def _save_upload(filename, raw):
-    folder = os.path.join(UPLOAD_DIR, time.strftime("%Y%m%d-%H%M%S"))
-    if not os.path.isdir(folder):
-        os.makedirs(folder, exist_ok=True)
-    path = os.path.join(folder, filename)
-    with open(path, "wb") as f:
-        f.write(raw)
-    Logger.log("d", "Файл сохранен: %s (%d байт)", path, len(raw))
-    return path
 
 
 def _collect_attachments(attachments):
@@ -52,7 +40,9 @@ def _collect_attachments(attachments):
         elif ext in IMAGE_EXT:
             images.append(_image_data_url(ext, raw))
         elif ext in MODEL_EXT:
-            files.append({"name": filename, "path": _save_upload(filename, raw)})
+            path = save_upload(filename, raw)
+            Logger.log("d", "Файл сохранен: %s (%d байт)", path, len(raw))
+            files.append({"name": filename, "path": path})
         else:
             raise ValueError("Неподдерживаемый тип файла: %s" % filename)
     return images, files, documents
@@ -60,9 +50,21 @@ def _collect_attachments(attachments):
 
 def handle_get_events(ctx, handler, query):
     since_seq = int(query.get("since", [0])[0])
-    wait = float(query.get("wait", [20.0])[0])
-    events = ctx.events.get_events(since_id=since_seq, timeout=wait)
-    handler.send_json({"events": events, "server_time": time.time()})
+    wait = min(float(query.get("wait", [20.0])[0]), MAX_EVENTS_WAIT)
+    client_session = query.get("session", [""])[0]
+    server_session = ctx.events.session
+    if client_session and client_session != server_session:
+        events = []
+    else:
+        events = ctx.events.get_events(since_id=since_seq, timeout=wait)
+    handler.send_json({
+        "events": events,
+        "server_time": time.time(),
+        "busy": bool(ctx.agent.busy),
+        "running_chat": ctx.chats.running_id,
+        "running_chats": ctx.chats.running_ids,
+        "session": server_session,
+    })
 
 
 def handle_get_config(ctx, handler, query):
@@ -107,7 +109,7 @@ def handle_post_message(ctx, handler, body):
         return
 
     images, files, documents = _collect_attachments(raw_attachments)
-    ctx.agent.submit(
+    chat_id = ctx.agent.submit(
         text, images=images, files=files, documents=documents, chat_id=chat_id
     )
     handler.send_json({"ok": True, "chat_id": chat_id})
@@ -119,22 +121,31 @@ def handle_post_config(ctx, handler, body):
 
 
 def handle_post_stop(ctx, handler, body):
-    ctx.agent.stop()
+    ctx.agent.stop(body.get("chat_id"))
     handler.send_json({"ok": True})
 
 
 def handle_post_review(ctx, handler, body):
     review_id = body.get("review_id")
-    action = body.get("action")
-    params = body.get("params") or {}
-    feedback = body.get("feedback") or ""
-
-    if not review_id or action not in ("apply", "cancel"):
+    if not review_id:
         handler.send_json({"error": "Некорректные параметры review"}, status=400)
         return
 
-    ok = ctx.review.resolve(review_id, action, params, feedback)
-    handler.send_json({"ok": ok})
+    if body.get("action") == "cancel" or body.get("cancelled"):
+        ctx.review.cancel()
+        handler.send_json({"ok": True})
+        return
+
+    try:
+        ctx.review.answer(
+            review_id,
+            changes=body.get("changes") or body.get("params") or {},
+            comment=body.get("comment") or body.get("feedback") or "",
+        )
+    except ValueError as error:
+        handler.send_json({"error": str(error)}, status=400)
+        return
+    handler.send_json({"ok": True})
 
 
 def handle_post_test_llm(ctx, handler, body):
@@ -159,7 +170,7 @@ def handle_post_system_prompt_reset(ctx, handler, body):
 
 
 def handle_post_chats_create(ctx, handler, body):
-    handler.send_json(ctx.chats.create())
+    handler.send_json({"chat": ctx.chats.create()})
 
 
 def handle_post_chats_select(ctx, handler, body):
@@ -196,6 +207,7 @@ ROUTES_POST = {
     "/api/system_prompt": handle_post_system_prompt,
     "/api/system_prompt/reset": handle_post_system_prompt_reset,
     "/api/chats/create": handle_post_chats_create,
+    "/api/chats/new": handle_post_chats_create,
     "/api/chats/select": handle_post_chats_select,
     "/api/chats/rename": handle_post_chats_rename,
     "/api/chats/delete": handle_post_chats_delete,

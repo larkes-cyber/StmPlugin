@@ -5,7 +5,14 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .ai import LLMError
 from .chats import ChatManager, drop_unanswered_tool_calls, strip_images
-from .core import Logger, config
+from .core import Logger, config, to_jsonable
+from .core.dispatcher import (
+    abort_chat_waits,
+    abort_main_waits,
+    bind_wait_chat,
+    clear_chat_waits,
+    clear_main_waits_abort,
+)
 
 MAX_STEPS = 40
 MAX_TOOL_RESULT_CHARS = 12000
@@ -15,23 +22,41 @@ def _image_part(image_url):
     return {"type": "image_url", "image_url": {"url": image_url}}
 
 
+def _attachment_labels(images, files, documents):
+    """Подписи для ленты чата. Пути и текст документов сюда не попадают."""
+    labels = [item["name"] for item in files]
+    for document in documents:
+        if document.get("truncated"):
+            suffix = "обрезан"
+        else:
+            suffix = "%d симв." % document.get("chars", 0)
+        labels.append("%s (%s)" % (document["name"], suffix))
+    for number in range(1, len(images) + 1):
+        labels.append("изображение %d" % number)
+    return labels
+
+
 class AgentRunner(object):
     """
-    Многопоточный раннер диалогов на базе Worker Pool (ThreadPoolExecutor).
-    Обеспечивает параллельную обработку сообщений в разных чатах без взаимных блокировок.
+    Цикл диалога в пуле потоков.
+
+    Диалоги идут параллельно. Повторный запрос в тот же чат отклоняется,
+    пока он не завершится. Вызовы в слайсер сериализует его собственный замок.
     """
 
-    def __init__(self, config_obj, registry, events, llm, system_prompt, chats=None):
+    def __init__(self, config_obj, registry, events, llm, system_prompt, chats=None, review=None):
         self._config = config_obj or config
         self._system_prompt = system_prompt
         self._registry = registry
         self._events = events
         self._llm = llm
+        self._review = review
         self._chats = chats if chats is not None else ChatManager(events)
 
         self._lock = threading.Lock()
         self._active_chats = set()
         self._cancel_flags = set()
+        self._futures = {}
 
         max_workers = int(self._config.get("max_workers", 4))
         self._pool = ThreadPoolExecutor(max_workers=max_workers)
@@ -51,44 +76,75 @@ class AgentRunner(object):
             if chat_id:
                 Logger.log("i", "Запрошена остановка чата %s", chat_id)
                 self._cancel_flags.add(chat_id)
+                targets = [chat_id]
             else:
                 Logger.log("i", "Запрошена остановка всех активных чатов: %s", self._active_chats)
                 self._cancel_flags.update(self._active_chats)
+                targets = list(self._active_chats)
+
+            still_running = []
+            already_idle = []
+            for cid in targets:
+                future = self._futures.get(cid)
+                if future is not None and not future.done():
+                    still_running.append(cid)
+                elif cid in self._active_chats:
+                    already_idle.append(cid)
+
+        if self._review is not None:
+            self._review.cancel(chat_id)
+        if chat_id:
+            abort_chat_waits(chat_id)
+        elif still_running:
+            abort_main_waits()
+        for cid in already_idle:
+            self._drop_run(cid)
+        if not still_running:
+            clear_main_waits_abort()
 
     def submit(self, text, images=None, files=None, documents=None, chat_id=None):
         """Отправляет задачу на исполнение воркеру из пула потоков."""
         images = images or []
         files = files or []
         documents = documents or []
-        attachments = [{"kind": "image"} for _ in images] + files + documents
+        attachments = _attachment_labels(images, files, documents)
 
-        with self._lock:
-            target_chat = self._chats.resolve(chat_id)
-            cid = target_chat.id
+        chat = None
+        try:
+            with self._lock:
+                target_chat = self._chats.resolve(chat_id)
+                cid = target_chat.id
 
-            if cid in self._active_chats:
-                title = self._chats.title(cid) or "диалог"
-                raise ValueError("В чате «%s» уже обрабатывается запрос — дождитесь ответа или остановите его" % title)
+                if cid in self._active_chats:
+                    title = self._chats.title(cid) or "диалог"
+                    raise ValueError("В чате «%s» уже обрабатывается запрос — дождитесь ответа или остановите его" % title)
 
-            chat = self._chats.begin_run(cid, self._title_hint(text, images, files, documents))
-            self._active_chats.add(chat.id)
-            self._cancel_flags.discard(chat.id)
+                chat = self._chats.begin_run(cid, self._title_hint(text, images, files, documents))
+                self._active_chats.add(chat.id)
+                self._cancel_flags.discard(chat.id)
 
-        Logger.log(
-            "i",
-            "Запуск воркера [чат %s, история: %d]: %s | файлы=%s доки=%s фото=%d",
-            chat.id,
-            len(chat.messages),
-            text,
-            [f["name"] for f in files],
-            [d["name"] for d in documents],
-            len(images),
-        )
-        self._events.emit("user", {"text": text, "attachments": attachments}, chat_id=chat.id)
-
-        # Отправляем задачу в Worker Pool:
-        future = self._pool.submit(self._run_task, chat, text, images, files, documents)
-        return future
+            preview = " ".join((text or "").split())
+            if len(preview) > 180:
+                preview = preview[:179].rstrip() + "…"
+            Logger.log(
+                "i",
+                "Запуск воркера [чат %s, история: %d, файлы=%d, доки=%d, фото=%d]: %s",
+                chat.id,
+                len(chat.messages),
+                len(files),
+                len(documents),
+                len(images),
+                preview,
+            )
+            self._events.emit("user", {"text": text, "attachments": attachments}, chat_id=chat.id)
+            future = self._pool.submit(self._run_task, chat, text, images, files, documents)
+            with self._lock:
+                self._futures[chat.id] = future
+            return chat.id
+        except Exception:
+            if chat is not None:
+                self._drop_run(chat.id)
+            raise
 
     def _is_cancelled(self, chat_id):
         with self._lock:
@@ -96,6 +152,7 @@ class AgentRunner(object):
 
     def _run_task(self, chat, text, images, files, documents):
         chat_id = chat.id
+        bind_wait_chat(chat_id)
         started_at = time.time()
         steps_done = 0
         messages = list(chat.messages)
@@ -169,11 +226,11 @@ class AgentRunner(object):
                     except Exception:
                         args = {}
 
-                    self._events.emit("tool_call", {"id": call_id, "name": name, "args": args}, chat_id=chat_id)
-                    tool_outcome = self._registry.call(name, args, source="agent")
-                    self._events.emit("tool_result", {"id": call_id, "name": name, "result": tool_outcome}, chat_id=chat_id)
+                    tool_outcome = self._registry.call(
+                        name, args, source="agent", call_id=call_id, chat_id=chat_id
+                    )
 
-                    result_text = json.dumps(tool_outcome, ensure_ascii=False, default=str)
+                    result_text = json.dumps(to_jsonable(tool_outcome), ensure_ascii=False)
                     if len(result_text) > MAX_TOOL_RESULT_CHARS:
                         result_text = result_text[:MAX_TOOL_RESULT_CHARS] + "… [обрезано]"
 
@@ -195,11 +252,29 @@ class AgentRunner(object):
             except Exception:
                 Logger.logException("Не удалось сохранить сессию чата %s", chat_id)
 
+            clear_chat_waits(chat_id)
             with self._lock:
                 self._active_chats.discard(chat_id)
                 self._cancel_flags.discard(chat_id)
+                self._futures.pop(chat_id, None)
+                others_running = bool(self._active_chats)
 
+            if not others_running:
+                clear_main_waits_abort()
             self._events.emit("status", {"state": "idle"}, chat_id=chat_id)
+
+    def _drop_run(self, chat_id):
+        """Снимает флаг запуска, если воркер так и не начал работать."""
+        with self._lock:
+            self._active_chats.discard(chat_id)
+            self._cancel_flags.discard(chat_id)
+            self._futures.pop(chat_id, None)
+        try:
+            chat = self._chats.resolve(chat_id)
+            self._chats.end_run(chat)
+        except Exception:
+            Logger.logException("Не удалось снять запуск чата %s", chat_id)
+        self._events.emit("status", {"state": "idle"}, chat_id=chat_id)
 
     def _user_message(self, text, images, files, documents):
         parts = []
@@ -209,11 +284,15 @@ class AgentRunner(object):
             parts.append("Задача описана в приложенном документе.")
 
         for doc in documents:
-            parts.append("\n=== Документ: %s ===\n%s\n" % (doc["name"], doc["text"]))
+            note = ""
+            if doc.get("truncated"):
+                note = " (текст обрезан до %d символов)" % doc.get("chars", 0)
+            parts.append("\n=== Документ: %s%s ===\n%s\n" % (doc["name"], note, doc["text"]))
 
         if files:
-            file_names = ", ".join(f["name"] for f in files)
-            parts.append("\nПрикреплены 3D-файлы: %s (загрузите их на стол через load_model)" % file_names)
+            parts.append("\nПрикреплённые модели. Загрузи каждую через load_model, аргумент path — абсолютный путь:")
+            for item in files:
+                parts.append("- %s: %s" % (item["name"], item["path"]))
 
         full_text = "\n".join(parts)
         if not images:

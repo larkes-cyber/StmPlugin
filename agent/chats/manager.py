@@ -30,11 +30,13 @@ class ChatManager(object):
         self._save_timer = None
         self._chats = {}
         self._active_id = None
-        self._running_id = None
+        self._running_ids = set()
 
         self._load()
         recent = self._most_recent() or self._add_chat()
         self._active_id = recent.id
+        if hasattr(events, "subscribe"):
+            events.subscribe(self.append_event)
 
     @property
     def lock(self):
@@ -48,7 +50,14 @@ class ChatManager(object):
     @property
     def running_id(self):
         with self._lock:
-            return self._running_id
+            if not self._running_ids:
+                return None
+            return next(iter(self._running_ids))
+
+    @property
+    def running_ids(self):
+        with self._lock:
+            return list(self._running_ids)
 
     def title(self, chat_id):
         with self._lock:
@@ -62,8 +71,10 @@ class ChatManager(object):
             return {
                 "chats": [self._meta(chat) for chat in chats],
                 "active_id": self._active_id,
-                "running_id": self._running_id,
+                "running_id": next(iter(self._running_ids), None),
+                "running_ids": list(self._running_ids),
                 "seq": getattr(self._events, "_seq", 0),
+                "session": getattr(self._events, "session", ""),
             }
 
     def history(self, chat_id):
@@ -106,7 +117,7 @@ class ChatManager(object):
     def delete(self, chat_id):
         with self._lock:
             chat = self._get(chat_id)
-            if chat.id == self._running_id:
+            if chat.id in self._running_ids:
                 raise ValueError("Нельзя удалить чат, пока в нём работает агент")
 
             del self._chats[chat_id]
@@ -140,11 +151,7 @@ class ChatManager(object):
         """Помечает чат как запущенный и задает автозаголовок при первом сообщении."""
         with self._lock:
             chat = self._get(chat_id or self._active_id)
-            if self._running_id is not None and self._running_id != chat.id:
-                raise ValueError("Другой чат уже запущен")
-
-            self._active_id = chat.id
-            self._running_id = chat.id
+            self._running_ids.add(chat.id)
 
             if not chat.title and not chat.title_custom and title_hint:
                 auto = clean_title(title_hint, limit=AUTO_TITLE_CHARS)
@@ -163,18 +170,17 @@ class ChatManager(object):
 
     def end_run(self, chat):
         with self._lock:
-            if self._running_id == chat.id:
-                self._running_id = None
+            self._running_ids.discard(chat.id)
             chat.updated = time.time()
             chat.saved_messages = json_copy(chat.messages)
             self._mark_dirty(chat)
             self._notify("run_finished", chat.id)
 
     def append_event(self, event, chat_id=None):
-        target_id = (
-            chat_id or event.get("chat_id") or self._running_id or self._active_id
-        )
-        if not target_id:
+        target_id = chat_id or event.get("chat_id")
+        if not target_id or target_id == "default":
+            target_id = self._active_id
+        if not target_id or target_id == "default":
             return
 
         event_type = event.get("type")
@@ -195,7 +201,7 @@ class ChatManager(object):
 
     def _meta(self, chat):
         meta = chat.meta()
-        meta["running"] = chat.id == self._running_id
+        meta["running"] = chat.id in self._running_ids
         return meta
 
     def _get(self, chat_id):
@@ -227,7 +233,7 @@ class ChatManager(object):
             if (
                 chat.is_empty()
                 and not chat.title_custom
-                and chat.id != self._running_id
+                and chat.id not in self._running_ids
             ):
                 return chat
         return None

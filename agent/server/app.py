@@ -1,11 +1,12 @@
 import json
 import os
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlparse
 
-from ..core import Logger, config
+from ..core import Logger, config, to_jsonable
 from .routes import ROUTES_GET, ROUTES_POST
 from .static import serve_static_file
 
@@ -13,9 +14,22 @@ MAX_BODY_BYTES = 200 * 1024 * 1024
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 
 
+def _client_disconnected(error):
+    return isinstance(error, (BrokenPipeError, ConnectionAbortedError, ConnectionResetError))
+
+
 class ChatServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # На Windows SO_REUSEADDR даёт второму слайсеру занять тот же 8765,
+    # а браузер остаётся на старом процессе.
+    allow_reuse_address = False
+
+    def handle_error(self, request, client_address):
+        error = sys.exc_info()[1]
+        if _client_disconnected(error):
+            Logger.log("d", "Клиент закрыл соединение %s", client_address)
+            return
+        HTTPServer.handle_error(self, request, client_address)
 
 
 def make_request_handler(ctx):
@@ -30,7 +44,7 @@ def make_request_handler(ctx):
             return host_header in LOCAL_HOSTS or host_header == "127.0.0.1"
 
         def send_json(self, data, status=200):
-            body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+            body = json.dumps(to_jsonable(data), ensure_ascii=False).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -61,8 +75,11 @@ def make_request_handler(ctx):
                 try:
                     handler_func(ctx, self, query)
                 except Exception as e:
+                    if _client_disconnected(e):
+                        Logger.log("d", "Клиент закрыл GET %s", parsed.path)
+                        return
                     Logger.logException("Сбой обработки GET %s: %s", parsed.path, e)
-                    self.send_json({"error": str(e)}, status=500)
+                    self._send_error_json(e)
             else:
                 # Отдача статических файлов из web/
                 serve_static_file(self, web_dir, parsed.path)
@@ -89,8 +106,19 @@ def make_request_handler(ctx):
                 body = json.loads(raw) if raw.strip() else {}
                 handler_func(ctx, self, body)
             except Exception as e:
+                if _client_disconnected(e):
+                    Logger.log("d", "Клиент закрыл POST %s", parsed.path)
+                    return
                 Logger.logException("Сбой обработки POST %s: %s", parsed.path, e)
-                self.send_json({"error": str(e)}, status=500)
+                self._send_error_json(e)
+
+        def _send_error_json(self, error):
+            try:
+                self.send_json({"error": str(error)}, status=500)
+            except Exception as write_error:
+                if _client_disconnected(write_error):
+                    return
+                Logger.logException("Не удалось отправить ошибку клиенту: %s", write_error)
 
         def log_message(self, format, *args):
             # Отключаем дефолтный вывод каждого HTTP-запроса в stderr

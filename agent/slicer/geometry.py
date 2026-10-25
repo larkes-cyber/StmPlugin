@@ -39,6 +39,28 @@ def scene_to_plate(points):
     return plate_points
 
 
+def indexed_triangles(vertices, indices):
+    """Собирает треугольники (F, 3, 3) из вершин сетки и индекса."""
+    if vertices is None:
+        return None
+    vertices = numpy.asarray(vertices, dtype=numpy.float64)
+    if vertices.size == 0:
+        return None
+    if indices is not None:
+        return vertices[numpy.asarray(indices)]
+    if len(vertices) % 3 == 0:
+        return vertices.reshape(-1, 3, 3)
+    return None
+
+
+def transform_triangles(triangles, matrix):
+    """Переводит треугольники матрицей 4×4 (мировое преобразование сцены)."""
+    matrix = numpy.asarray(matrix, dtype=numpy.float64)
+    points = triangles.reshape(-1, 3)
+    world_points = points.dot(matrix[:3, :3].T) + matrix[:3, 3]
+    return world_points.reshape(-1, 3, 3)
+
+
 def plate_to_scene_vector(vector):
     return (float(vector[0]), float(vector[2]), -float(vector[1]))
 

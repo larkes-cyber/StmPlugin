@@ -47,6 +47,7 @@ class Context(object):
             self.llm,
             self.system_prompt,
             self.chats,
+            review=self.review,
         )
         self.server = None
 

@@ -3,12 +3,33 @@ import threading
 import time
 
 from steslicer.SteSlicerApplication import SteSlicerApplication
+from UM.Backend.Backend import BackendState
 
 from ..ai import ToolError
 from ..core import Logger, config, on_main, run_on_main
+from ..core.dispatcher import main_waits_aborted
+from ..uploads import resolve_model_path
 from .exporter import SlicerExporter
 from .scene import SlicerScene
-from .settings import SlicerSettings
+from .settings import MODE_LABELS, SlicerSettings
+
+REVIEW_SETTING_KEYS = (
+    "layer_height",
+    "cylindrical_layer_height",
+    "infill_sparse_density",
+    "speed_print",
+    "material_print_temperature",
+    "material_bed_temperature",
+)
+FIVE_AXIS_ONLY_KEYS = ("cylindrical_layer_height",)
+USER_CHANGE_REASON = "Изменено пользователем"
+BACKEND_STATE_NAMES = {
+    BackendState.NotStarted: "pending",
+    BackendState.Processing: "processing",
+    BackendState.Done: "done",
+    BackendState.Error: "error",
+    BackendState.Disabled: "disabled",
+}
 
 
 def _app():
@@ -49,8 +70,11 @@ class SlicerAPI(object):
 
     # 1. Методы сцены
     def load_model(self, path):
+        resolved = resolve_model_path(path)
+        if resolved != path:
+            Logger.log("d", "load_model: %s -> %s", path, resolved)
         with self._slicer_lock:
-            return self.scene.load_model(path)
+            return self.scene.load_model(resolved)
 
     def list_objects(self):
         with self._slicer_lock:
@@ -86,15 +110,17 @@ class SlicerAPI(object):
 
     # 2. Методы настроек и профилей
     def get_state(self):
-        with self._slicer_lock:
+        def read():
             g_stack = self.settings.global_stack()
             return {
-                "printer": g_stack.getName(),
+                "printer": g_stack.getName() if g_stack is not None else "",
                 "print_mode": self.settings.get_print_mode(),
                 "objects": [self.scene.node_info(n) for n in self.scene.object_nodes()],
                 "slicing": dict(self._slice),
                 "build_volume_mm": self.scene.build_volume(),
             }
+
+        return run_on_main(read, timeout=8.0)
 
     def get_settings(self, keys):
         with self._slicer_lock:
@@ -130,17 +156,20 @@ class SlicerAPI(object):
         with self._slicer_lock:
             return self.settings.list_quality_profiles()
 
-    def set_quality_profile(self, profile_id):
+    def set_quality_profile(self, name):
         with self._slicer_lock:
-            return self.settings.set_quality_profile(profile_id)
+            return self.settings.set_quality_profile(name)
 
     def list_materials(self):
         with self._slicer_lock:
             return self.settings.list_materials()
 
-    def set_material(self, material_name):
+    def set_material(self, material_id=None, id=None):
+        chosen = material_id or id
+        if not chosen:
+            raise ToolError("Нужен material_id из list_materials")
         with self._slicer_lock:
-            return self.settings.set_material(material_name)
+            return self.settings.set_material(chosen)
 
     def save_profile(self, name):
         with self._slicer_lock:
@@ -150,38 +179,39 @@ class SlicerAPI(object):
         with self._slicer_lock:
             return self.scene.arrange_all()
 
-    def apply_orientation(self, object_id=None, down_vector=None):
+    def apply_orientation(self, object_id=None, rank=None, down=None):
         with self._slicer_lock:
-            return self.scene.apply_orientation(object_id, down_vector)
+            return self.scene.apply_orientation(object_id, down_vector=down, rank=rank)
 
-    def suggest_orientations(self, object_id=None, support_angle=50.0):
-        with self._slicer_lock:
-            from .geometry import suggest_orientations
-            node = self.scene.find_node(object_id)
-            mesh = node.getMeshData()
-            if mesh is None:
-                raise ToolError("У объекта нет полигональной сетки")
-            return suggest_orientations(mesh, support_angle=support_angle)
+    def suggest_orientations(self, object_id=None, support_angle=None, top_n=5):
+        node_id, triangles, angle = self._geometry_inputs(object_id, support_angle)
+        from .geometry import suggest_orientations
+
+        result = suggest_orientations(triangles, angle, int(top_n or 5))
+        result["object_id"] = node_id
+        self.scene.remember_suggestions(node_id, result["candidates"])
+        return result
     # 3. Управление слайсингом через Backend
     def start_slicing(self, wait=True, timeout=None):
-        with self._slicer_lock:
-            slice_timeout = float(timeout or self._config.get("slice_timeout", 300.0))
-            run_on_main(self._start_slice)
-            if not wait:
-                return {"state": "processing"}
+        slice_timeout = float(timeout or self._config.get("slice_timeout", 300.0))
+        run_on_main(self._start_slice)
+        if not wait:
+            return {"state": "processing"}
 
-            deadline = time.time() + slice_timeout
-            while time.time() < deadline:
-                time.sleep(0.5)
-                state = self._slice["state"]
-                if state == "done":
-                    result = run_on_main(self._result_dict)
-                    Logger.log("i", "Слайсинг завершён успешно: %s", result)
-                    return result
-                if state in ("error", "disabled"):
-                    raise ToolError("Слайсинг не выполнен: статус '%s'. Проверьте положение модели на столе" % state)
+        deadline = time.time() + slice_timeout
+        while time.time() < deadline:
+            if main_waits_aborted():
+                raise ToolError("Остановлено пользователем")
+            time.sleep(0.25)
+            state = self._slice["state"]
+            if state == "done":
+                result = run_on_main(self._result_dict)
+                Logger.log("i", "Слайсинг завершён успешно: %s", result)
+                return result
+            if state in ("error", "disabled"):
+                raise ToolError("Слайсинг не выполнен: статус '%s'. Проверьте положение модели на столе" % state)
 
-            raise ToolError("Слайсинг не завершился за %d с" % int(slice_timeout))
+        raise ToolError("Слайсинг не завершился за %d с" % int(slice_timeout))
 
     def get_slicing_status(self):
         status = dict(self._slice)
@@ -219,21 +249,141 @@ class SlicerAPI(object):
                 res["project_error"] = str(e)
             return res
 
-    def analyze_geometry(self, object_id=None):
-        with self._slicer_lock:
-            from .geometry import analyze
+    def analyze_geometry(self, object_id=None, support_angle=None):
+        node_id, triangles, angle = self._geometry_inputs(object_id, support_angle)
+        from .geometry import analyze
+
+        result = analyze(triangles, angle)
+        result["object_id"] = node_id
+        return result
+
+    def _geometry_inputs(self, object_id, support_angle):
+        def prepare():
             node = self.scene.find_node(object_id)
-            mesh = node.getMeshData()
-            if mesh is None:
-                raise ToolError("У объекта нет полигональной сетки")
-            return analyze(mesh)
+            return self.scene.object_id(node), self.scene.plate_triangles(node)
+
+        with self._slicer_lock:
+            node_id, triangles = run_on_main(prepare)
+            angle = self._support_angle(support_angle)
+        return node_id, triangles, angle
+
+    def _support_angle(self, value):
+        if value is not None:
+            return float(value)
+
+        def read():
+            stack, _ = self.settings.stack_for("support_angle")
+            raw = stack.getProperty("support_angle", "value")
+            return float(raw or 50.0)
+
+        try:
+            return run_on_main(read)
+        except Exception:
+            return 50.0
+
+    def review_proposal(self):
+        with self._slicer_lock:
+            mode = self.settings.get_print_mode()
+            materials = self.settings.list_materials()
+            mode_name = mode.get("mode") or "classic"
+            settings = []
+            for key in REVIEW_SETTING_KEYS:
+                if key in FIVE_AXIS_ONLY_KEYS and mode_name == "classic":
+                    continue
+                try:
+                    settings.append(self.settings.describe(key))
+                except ToolError:
+                    continue
+            active = materials.get("active") or {}
+            for item in materials.get("materials") or []:
+                if item.get("name") and item.get("name") == active.get("name"):
+                    active = item
+                    break
+            return {
+                "print_mode": mode_name,
+                "print_modes": [
+                    {"value": option, "label": MODE_LABELS.get(option, option)}
+                    for option in (mode.get("options") or [])
+                ],
+                "material": active,
+                "materials": materials.get("materials") or [],
+                "settings": settings,
+                "objects": [self.scene.node_info(node) for node in self.scene.object_nodes()],
+            }
+
+    def apply_review_changes(self, changes):
+        changes = changes or {}
+        applied = []
+        errors = []
+        if changes.get("print_mode"):
+            self._try_review_change(
+                applied, errors, "режим печати",
+                lambda: self.set_print_mode(changes["print_mode"], USER_CHANGE_REASON),
+            )
+        if changes.get("material_id"):
+            self._try_review_change(
+                applied, errors, "материал",
+                lambda: self.set_material(changes["material_id"]),
+            )
+        settings = changes.get("settings")
+        if settings:
+            try:
+                result = self.set_settings(settings, USER_CHANGE_REASON)
+            except ToolError as error:
+                errors.append("настройки: %s" % error)
+            else:
+                for change in result.get("applied") or []:
+                    applied.append(
+                        "%s: %s → %s" % (change.get("label") or change.get("key"), change.get("old"), change.get("new"))
+                    )
+                for error in result.get("errors") or []:
+                    errors.append("%s: %s" % (error.get("key"), error.get("error")))
+        placement = changes.get("placement") or {}
+        if placement:
+            self._apply_review_placement(placement, applied, errors)
+        return {"applied": applied, "errors": errors}
+
+    def _apply_review_placement(self, placement, applied, errors):
+        object_id = placement.get("object_id")
+        if "x" in placement or "y" in placement:
+            self._try_review_change(
+                applied, errors, "положение",
+                lambda: self.move_object(object_id, placement.get("x"), placement.get("y")),
+            )
+        if placement.get("scale_percent") is not None:
+            percent = float(placement["scale_percent"])
+            self._try_review_change(
+                applied, errors, "масштаб",
+                lambda: self.scale_object(object_id, percent=percent),
+            )
+        for axis in ("x", "y", "z"):
+            degrees = placement.get("rotate_" + axis)
+            if not degrees:
+                continue
+            self._try_review_change(
+                applied, errors, "поворот %s" % axis.upper(),
+                lambda axis=axis, degrees=degrees: self.rotate_object(axis, float(degrees), object_id),
+            )
+
+    @staticmethod
+    def _try_review_change(applied, errors, description, change):
+        try:
+            change()
+        except ToolError as error:
+            errors.append("%s: %s" % (description, error))
+            return
+        applied.append(description)
 
     # Внутренние методы оркестрации нарезки
     def _ensure_backend(self):
         if self._backend is None:
             self._backend = _app().getBackend()
             self._backend.backendStateChange.connect(self._on_backend_state_change)
-            self._backend.slicingProgress.connect(self._on_progress)
+            progress = getattr(self._backend, "processingProgress", None)
+            if progress is None:
+                progress = getattr(self._backend, "slicingProgress", None)
+            if progress is not None:
+                progress.connect(self._on_progress)
         return self._backend
 
     def _start_slice(self):
@@ -248,7 +398,9 @@ class SlicerAPI(object):
         backend.forceSlice()
 
     def _on_backend_state_change(self, backend_state):
-        state_str = str(backend_state).split(".")[-1].lower()
+        state_str = BACKEND_STATE_NAMES.get(backend_state)
+        if state_str is None:
+            state_str = str(backend_state).split(".")[-1].lower()
         self._slice["state"] = state_str
         if state_str == "done":
             self._slice["progress"] = 1.0
@@ -262,9 +414,15 @@ class SlicerAPI(object):
             self._events.emit("slice_state", {"state": state_str})
 
     def _on_progress(self, amount):
+        if self._slice["state"] != "processing":
+            return
         amount = float(amount)
         self._slice["progress"] = amount
-        if abs(amount - self._last_progress_emit) >= 0.05 or amount >= 1.0:
+        if amount >= 1.0:
+            return
+        if self._slice["state"] != "processing":
+            return
+        if abs(amount - self._last_progress_emit) >= 0.05:
             self._last_progress_emit = amount
             self._events.emit("slice_progress", {"progress": round(amount, 3)})
 

@@ -357,14 +357,14 @@ class SlicerScene(object):
             )
         return candidates[index]["down"]
 
-    def get_scene_snapshot(self, size=DEFAULT_SNAPSHOT_SIZE):
+    def get_scene_snapshot(self, size=DEFAULT_SNAPSHOT_SIZE, chat_id=None):
         size = max(128, min(int(size or DEFAULT_SNAPSHOT_SIZE), 1024))
         png_data = run_on_main(lambda: self._snapshot_png(size))
         image_url = "data:image/png;base64," + base64.b64encode(png_data).decode(
             "ascii"
         )
 
-        self._events.emit("snapshot", {"image": image_url, "caption": "Снимок сцены"})
+        self._events.emit("snapshot", {"image": image_url, "caption": "Снимок сцены"}, chat_id=chat_id)
         return {"image_attached": True, "size_px": size, "_image": image_url}
 
     def _snapshot_png(self, size):

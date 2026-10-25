@@ -848,23 +848,21 @@
       return;
     }
     if (event.type === "slice_progress") {
-      if (sliceOpen) {
+      if (isOpenChatEvent(event) && sliceOpen) {
         setSliceBar("processing", event.progress);
       }
       return;
     }
 
     if (!isOpenChatEvent(event)) {
-      if (event.type === "slice_state") {
-        setSliceBar(event.state, event.state === "processing" ? 0 : 1);
-      }
-      if (SHARED_STATE_EVENTS.includes(event.type) || event.type === "slice_state") {
-        scheduleStateRefresh();
-      }
       if (UNREAD_EVENTS.includes(event.type)) {
         markUnread(event.chat_id);
       }
       return;
+    }
+
+    if (event.type === "slice_state") {
+      setSliceBar(event.state, event.state === "processing" ? 0 : 1);
     }
 
     if (view.loading) {

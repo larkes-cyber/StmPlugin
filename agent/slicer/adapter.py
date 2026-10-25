@@ -162,9 +162,10 @@ class SlicerAPI(object):
         with self._slicer_lock:
             return self.scene.delete_object(object_id)
 
-    def get_scene_snapshot(self, size=None):
+    def get_scene_snapshot(self, size=None, chat_id=None):
+        target_chat = chat_id or self._active_chat_id
         with self._slicer_lock:
-            return self.scene.get_scene_snapshot(size)
+            return self.scene.get_scene_snapshot(size, chat_id=target_chat)
 
     # 2. Методы настроек и профилей
     def get_state(self):
@@ -467,9 +468,9 @@ class SlicerAPI(object):
                 res = self._result_dict()
             except Exception:
                 res = {}
-            self._events.emit("slice_state", {"state": "done", "result": res})
+            self._events.emit("slice_state", {"state": "done", "result": res}, chat_id=self._active_chat_id)
         elif state_str in ("error", "disabled"):
-            self._events.emit("slice_state", {"state": state_str})
+            self._events.emit("slice_state", {"state": state_str}, chat_id=self._active_chat_id)
 
     def _on_progress(self, amount):
         if self._slice["state"] != "processing":
@@ -482,7 +483,7 @@ class SlicerAPI(object):
             return
         if abs(amount - self._last_progress_emit) >= 0.05:
             self._last_progress_emit = amount
-            self._events.emit("slice_progress", {"progress": round(amount, 3)})
+            self._events.emit("slice_progress", {"progress": round(amount, 3)}, chat_id=self._active_chat_id)
 
     def _result_dict(self):
         print_info = _app().getPrintInformation()

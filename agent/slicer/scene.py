@@ -291,8 +291,27 @@ class SlicerScene(object):
 
     @on_main
     def clear_scene(self):
-        """Полная очистка стола от любых старых моделей."""
+        """Полная очистка стола с защитой от сбоя CuraEngine gcode_dict."""
+        try:
+            backend = _app().getBackend()
+            if backend and hasattr(backend, "stopSlicing"):
+                backend.stopSlicing()
+        except Exception:
+            pass
+
         _app().deleteAll()
+
+        # Защита от падения CuraEngineBackend._onGCodePrefixMessage (KeyError: 0)
+        try:
+            sc = self.scene()
+            if hasattr(sc, "gcode_dict"):
+                if sc.gcode_dict is None:
+                    sc.gcode_dict = {0: []}
+                elif 0 not in sc.gcode_dict:
+                    sc.gcode_dict[0] = []
+        except Exception:
+            pass
+
         self._events.emit("scene_changed", {"action": "clear", "objects": []})
 
 

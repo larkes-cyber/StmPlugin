@@ -90,11 +90,11 @@ class SlicerAPI(object):
             if self._active_chat_id == chat.id and current_nodes:
                 return
 
-            # Проверяем: совпадает ли имя файла уже находящейся на столе детали с нужной
+            # Проверяем: совпадает ли и��я файла уже находящейся на столе детали с нужной
             if target_model and current_nodes:
-                target_filename = os.path.basename(target_model)
-                current_names = [n.getName() for n in current_nodes]
-                if any(target_filename.startswith(name) or name.startswith(target_filename) for name in current_names):
+                target_base = os.path.splitext(os.path.basename(target_model))[0].strip().lower()
+                current_bases = [os.path.splitext(n.getName())[0].strip().lower() for n in current_nodes]
+                if target_base in current_bases or any(target_base in name or name in target_base for name in current_bases):
                     self._active_chat_id = chat.id
                     if chat.slicer_state:
                         self.settings.apply_chat_state(chat.slicer_state)

@@ -133,9 +133,13 @@ class SlicerScene(object):
                 "Поддерживаются только форматы %s" % ", ".join(MODEL_EXTENSIONS)
             )
 
+        # Гарантируем, что на столе нет старых дублей деталей:
+        if self.object_nodes():
+            run_on_main(self.clear_scene)
+
         keys_before = set(run_on_main(self._node_keys))
         Logger.log(
-            "i", "Загрузка модели %s (было объектов: %d)", path, len(keys_before)
+            "i", "Загрузка модели %s на чистый стол", path
         )
         run_on_main(lambda: _app().readLocalFile(QUrl.fromLocalFile(path)))
 

@@ -63,6 +63,7 @@ def handle_get_events(ctx, handler, query):
         "busy": bool(ctx.agent.busy),
         "running_chat": ctx.chats.running_id,
         "running_chats": ctx.chats.running_ids,
+        "statuses": ctx.chats.statuses(),
         "session": server_session,
     })
 
@@ -132,7 +133,7 @@ def handle_post_review(ctx, handler, body):
         return
 
     if body.get("action") == "cancel" or body.get("cancelled"):
-        ctx.review.cancel()
+        ctx.review.cancel(chat_id=body.get("chat_id"), review_id=review_id)
         handler.send_json({"ok": True})
         return
 

@@ -208,7 +208,7 @@ button:disabled {
 
 .pill {
   padding: 3px 10px;
-  border-radius: 999px;
+  border-radius: 2px;
   background: var(--accent-weak);
   color: var(--accent);
   font-size: 12px;
@@ -488,7 +488,7 @@ button:disabled {
 }
 
 .example {
-  border-radius: 999px;
+  border-radius: 2px;
 }
 
 .msg {
@@ -524,6 +524,13 @@ button:disabled {
   background: var(--err-weak);
   color: var(--err);
   border: 1px solid var(--err);
+}
+
+.warning-icon {
+  width: 14px;
+  height: 14px;
+  margin-right: 4px;
+  vertical-align: -2px;
 }
 
 .msg.assistant p {
@@ -759,7 +766,7 @@ pre {
   max-width: 360px;
   margin-top: 6px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 4px;
   background: repeating-conic-gradient(var(--code) 0% 25%, transparent 0% 50%) 0 0 / 16px 16px;
 }
 
@@ -778,7 +785,7 @@ pre {
   margin: 8px 0;
   padding: 8px 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 4px;
 }
 
 .review-form legend {
@@ -846,13 +853,48 @@ pre {
   background: var(--panel);
 }
 
+/* Чат ждёт очереди к слайсеру */
+.pill.queued {
+  background: #fff4e0;
+  color: #8a5a00;
+}
+
+.queue-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--warn);
+  animation: queue-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes queue-pulse {
+  50% {
+    opacity: .3;
+  }
+}
+
+.chat-item.queued .ci-meta {
+  color: #8a5a00;
+}
+
+.link-btn {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .busy-note {
   max-width: 920px;
   margin: 0 auto 8px;
   padding: 6px 10px;
-  border-radius: 8px;
+  border-radius: 4px;
   background: #fff4e0;
-  color: var(--warn);
+  color: #8a5a00;
   font-size: 12px;
 }
 
@@ -930,7 +972,7 @@ pre {
   align-items: center;
   gap: 6px;
   padding: 3px 8px;
-  border-radius: 999px;
+  border-radius: 2px;
   background: var(--accent-weak);
   font-size: 12px;
 }
@@ -967,7 +1009,7 @@ dialog {
   max-height: 90vh;
   overflow-y: auto;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 4px;
   background: var(--panel);
   color: var(--text);
 }
@@ -998,7 +1040,7 @@ dialog input:not([type=checkbox]) {
   margin-top: 4px;
   padding: 7px 9px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 4px;
   background: var(--bg);
   color: var(--text);
   font: inherit;
@@ -1014,7 +1056,7 @@ dialog.prompt-dialog {
   margin: 8px 0;
   padding: 8px 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 4px;
   background: var(--bg);
   color: var(--text);
   font-family: ui-monospace, Consolas, monospace;

@@ -9,6 +9,7 @@ from .core import Logger, config, to_jsonable
 from .core.dispatcher import (
     abort_chat_waits,
     abort_main_waits,
+    bind_tool,
     bind_wait_chat,
     clear_chat_waits,
     clear_main_waits_abort,
@@ -253,6 +254,9 @@ class AgentRunner(object):
                 Logger.logException("Не удалось сохранить сессию чата %s", chat_id)
 
             clear_chat_waits(chat_id)
+            # поток пула переиспользуется — следующая задача не должна унаследовать этот чат
+            bind_wait_chat(None)
+            bind_tool(None)
             with self._lock:
                 self._active_chats.discard(chat_id)
                 self._cancel_flags.discard(chat_id)

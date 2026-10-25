@@ -67,10 +67,15 @@
   let chats = [];
   let runningIds = new Set();
   let agentState = { state: "idle", tool: null, chatId: null };
+  // Текущий статус каждого работающего чата: { state: thinking|tool|queued, tool, holder_title, ... }.
+  // Приходит событиями status и целиком — в /api/chats и каждом ответе /api/events.
+  let chatStatuses = {};
   let sending = false;
   // Открытый чат: история приходит одним запросом, живые события — через общий long-polling.
-  // seq — номер последнего события, уже вошедшего в историю; пока история грузится, события копятся в queue.
-  let view = { chatId: null, seq: 0, loading: false, queue: [] };
+  // seen — номера событий, уже показанных в ленте (история + живые). По набору, а не по «последнему номеру»:
+  // событие могло получить номер раньше, чем попасть в историю чата, — тогда оно придёт живым и не потеряется.
+  // Пока история грузится, живые события копятся в queue.
+  let view = { chatId: null, seen: new Set(), loading: false, queue: [] };
   const unreadChats = new Set();
   let chatsRefreshTimer = null;
   let renamingChatId = null;
@@ -150,6 +155,13 @@
       div.innerHTML = html;
     }
     return div;
+  }
+
+  function appendWarningMessage(text) {
+    appendToChat(createDiv(
+      "msg error",
+      `<img class="warning-icon" src="icons/warning.svg" alt=""> ${escapeHtml(text)}`
+    ));
   }
 
   function formatInline(text) {
@@ -592,6 +604,7 @@
     const status = form.querySelector(".review-status");
     const payload = {
       review_id: reviewId,
+      chat_id: view.chatId,
       changes: collectReviewChanges(form),
       comment: form.comment.value,
     };
@@ -697,6 +710,9 @@
     if (state === "thinking") {
       return "Думает…";
     }
+    if (state === "queued") {
+      return "В очереди к слайсеру";
+    }
     if (state === "tool" && tool === "request_user_review") {
       return "Ждёт вашего подтверждения";
     }
@@ -716,10 +732,14 @@
     pill.className = "pill";
     pill.title = "";
     pill.onclick = null;
+    const own = chatStatuses[view.chatId] || {};
     if (runningHere) {
-      const ownState = agentState.chatId === view.chatId ? agentState.state : "thinking";
-      const state = ownState === "idle" ? "thinking" : ownState;
-      pill.textContent = statusText(state, agentState.tool);
+      const state = own.state && own.state !== "idle" ? own.state : "thinking";
+      pill.textContent = statusText(state, own.tool);
+      if (state === "queued") {
+        pill.classList.add("queued");
+        pill.title = queueText(own);
+      }
     } else if (agentState.state === "error" && agentState.chatId === view.chatId) {
       pill.classList.add("error");
       pill.textContent = statusText("error");
@@ -731,15 +751,66 @@
     element("btn-send").classList.toggle("hidden", runningHere);
     element("btn-stop").classList.toggle("hidden", !runningHere);
     element("btn-send").disabled = sending;
-    element("busy-note").classList.add("hidden");
+    renderQueueNote(runningHere && own.state === "queued" ? own : null);
+  }
+
+  // Плашка над полем ввода: этот чат ждёт, пока слайсер освободит другой чат.
+  function queueText(status) {
+    const holder = status.holder_title ? `чатом «${status.holder_title}»` : "другим чатом";
+    const action = status.holder_tool ? ` (${TOOL_LABELS[status.holder_tool] || status.holder_tool})` : "";
+    return `Слайсер сейчас занят ${holder}${action}. Этот чат в очереди и продолжит автоматически.`;
+  }
+
+  function renderQueueNote(status) {
+    const note = element("busy-note");
+    if (!status) {
+      note.classList.add("hidden");
+      note.innerHTML = "";
+      return;
+    }
+    const open = status.holder_chat && status.holder_chat !== view.chatId
+      ? ' <button type="button" class="link-btn" data-open-chat="' + escapeHtml(status.holder_chat) + '">Открыть</button>'
+      : "";
+    note.innerHTML = "⏳ " + escapeHtml(queueText(status)) + open;
+    note.classList.remove("hidden");
+  }
+
+  function setChatStatus(chatId, status) {
+    if (!chatId || chatId === "default") {
+      return;
+    }
+    if (!status || !status.state || status.state === "idle") {
+      delete chatStatuses[chatId];
+    } else {
+      chatStatuses[chatId] = status;
+    }
+  }
+
+  function syncStatuses(statuses) {
+    if (!statuses) {
+      return;
+    }
+    const next = JSON.stringify(statuses);
+    if (next === JSON.stringify(chatStatuses)) {
+      return;
+    }
+    chatStatuses = Object.assign({}, statuses);
+    renderStatus();
+    renderChatList();
   }
 
   function handleStatusEvent(event) {
-    if (event.chat_id && event.chat_id !== view.chatId) {
-      return;
+    setChatStatus(event.chat_id, {
+      state: event.state,
+      tool: event.tool,
+      holder_chat: event.holder_chat,
+      holder_title: event.holder_title,
+      holder_tool: event.holder_tool,
+    });
+    renderChatList();
+    if (!event.chat_id || event.chat_id === view.chatId) {
+      renderStatus();
     }
-    agentState = { state: event.state, tool: event.tool, chatId: event.chat_id };
-    renderStatus();
   }
 
   function handleSliceState(event, replaying) {
@@ -827,7 +898,7 @@
         renderReviewClosed(event);
         break;
       case "error":
-        appendToChat(createDiv("msg error", "⚠ " + escapeHtml(event.message)));
+        appendWarningMessage(event.message);
         if (!replaying) {
           agentState = { state: "error", tool: null, chatId: event.chat_id };
           renderStatus();
@@ -848,16 +919,13 @@
       return;
     }
     if (event.type === "slice_progress") {
-      if (sliceOpen) {
+      if (sliceOpen && isOpenChatEvent(event)) {
         setSliceBar("processing", event.progress);
       }
       return;
     }
 
     if (!isOpenChatEvent(event)) {
-      if (event.type === "slice_state") {
-        setSliceBar(event.state, event.state === "processing" ? 0 : 1);
-      }
       if (SHARED_STATE_EVENTS.includes(event.type) || event.type === "slice_state") {
         scheduleStateRefresh();
       }
@@ -871,9 +939,15 @@
       view.queue.push(event);
       return;
     }
-    if (event.seq > view.seq) {
-      handleEvent(event, false);
+    showLiveEvent(event);
+  }
+
+  function showLiveEvent(event) {
+    if (view.seen.has(event.seq)) {
+      return;
     }
+    view.seen.add(event.seq);
+    handleEvent(event, false);
   }
 
   async function pollEvents() {
@@ -895,6 +969,7 @@
         dispatchEvent(event);
       });
       syncRunningChats(data.running_chats, data.running_chat);
+      syncStatuses(data.statuses);
       pollEvents();
     } catch (error) {
       const pill = element("status");
@@ -942,6 +1017,7 @@
       runningIds.add(event.target);
     } else if (event.action === "run_finished" && event.target) {
       runningIds.delete(event.target);
+      setChatStatus(event.target, null);
       if (agentState.chatId === event.target) {
         agentState = { state: "idle", tool: null, chatId: null };
       }
@@ -973,6 +1049,9 @@
     runningIds = new Set(
       listing.running_ids || chats.filter((chat) => chat.running).map((chat) => chat.id)
     );
+    if (listing.statuses) {
+      chatStatuses = Object.assign({}, listing.statuses);
+    }
     renderChatList();
     renderStatus();
     updateDocumentTitle();
@@ -994,6 +1073,13 @@
 
   function chatMetaHtml(chat) {
     if (runningIds.has(chat.id) || chat.running) {
+      const status = chatStatuses[chat.id] || {};
+      if (status.state === "queued") {
+        return '<span class="queue-dot"></span> в очереди к слайсеру';
+      }
+      if (status.state === "tool" && status.tool === "request_user_review") {
+        return '<span class="spin"></span> ждёт подтверждения';
+      }
       return '<span class="spin"></span> работает';
     }
     if (chat.empty) {
@@ -1015,6 +1101,7 @@
       item.dataset.id = chat.id;
       item.classList.toggle("active", chat.id === view.chatId);
       item.classList.toggle("running", runningIds.has(chat.id) || chat.running);
+      item.classList.toggle("queued", (chatStatuses[chat.id] || {}).state === "queued");
       item.classList.toggle("unread", unreadChats.has(chat.id));
       item.innerHTML = `
         <div class="ci-main">
@@ -1053,7 +1140,8 @@
       return;
     }
 
-    view = { chatId: chatId, seq: Infinity, loading: true, queue: [] };
+    view = { chatId: chatId, seen: new Set(), loading: true, queue: [] };
+    setSliceBar("idle", 0);
     unreadChats.delete(chatId);
     renderChatList();
     renderStatus();
@@ -1066,9 +1154,9 @@
       history = await api(`/api/chat?id=${encodeURIComponent(chatId)}`);
     } catch (error) {
       if (view.chatId === chatId) {
-        view = { chatId: chatId, seq: lastEventSeq, loading: false, queue: [] };
+        view = { chatId: chatId, seen: new Set(), loading: false, queue: [] };
         resetChat();
-        appendToChat(createDiv("msg error", "⚠ Не удалось открыть чат: " + escapeHtml(error.message)));
+        appendWarningMessage("Не удалось открыть чат: " + error.message);
         refreshChats();
       }
       return;
@@ -1094,14 +1182,10 @@
     finishReplay(history.chat.running);
 
     const queued = view.queue;
-    view.seq = history.seq;
+    view.seen = new Set(history.events.map((event) => event.seq));
     view.loading = false;
     view.queue = [];
-    queued.forEach((event) => {
-      if (event.seq > view.seq) {
-        handleEvent(event, false);
-      }
-    });
+    queued.forEach(showLiveEvent);
 
     scrollToBottom();
     renderStatus();
@@ -1114,7 +1198,7 @@
       await refreshChats();
       openChat(data.chat.id);
     } catch (error) {
-      appendToChat(createDiv("msg error", "⚠ " + escapeHtml(error.message)));
+      appendWarningMessage(error.message);
     }
   }
 
@@ -1147,7 +1231,7 @@
         try {
           await api("/api/chats/rename", { chat_id: chatId, title: title });
         } catch (error) {
-          appendToChat(createDiv("msg error", "⚠ " + escapeHtml(error.message)));
+          appendWarningMessage(error.message);
         }
       }
       refreshChats();
@@ -1187,7 +1271,7 @@
         openChat(listing.active_id);
       }
     } catch (error) {
-      appendToChat(createDiv("msg error", "⚠ " + escapeHtml(error.message)));
+      appendWarningMessage(error.message);
     }
   }
 
@@ -1249,7 +1333,7 @@
     try {
       await api("/api/stop", { chat_id: view.chatId });
     } catch (error) {
-      appendToChat(createDiv("msg error", "⚠ " + escapeHtml(error.message)));
+      appendWarningMessage(error.message);
     } finally {
       button.disabled = false;
     }
@@ -1344,7 +1428,7 @@
       attachments = [];
       renderAttachments();
     } catch (error) {
-      appendToChat(createDiv("msg error", "⚠ " + escapeHtml(error.message)));
+      appendWarningMessage(error.message);
       if (/настройках/.test(error.message)) {
         openSettings();
       }
@@ -1419,7 +1503,7 @@
       element("prompt-msg").textContent = "";
       element("prompt-dialog").showModal();
     } catch (error) {
-      appendToChat(createDiv("msg error", "⚠ " + escapeHtml(error.message)));
+      appendWarningMessage(error.message);
     }
   }
 
@@ -1571,6 +1655,12 @@
     element("btn-chats").addEventListener("click", () => element("chats").classList.toggle("open"));
     document.querySelector("main.chat").addEventListener("click", closeChatsDrawer);
     element("chat-list").addEventListener("click", onChatListClick);
+    element("busy-note").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-open-chat]");
+      if (button) {
+        openChat(button.dataset.openChat);
+      }
+    });
     element("chat-list").addEventListener("dblclick", (event) => {
       const item = event.target.closest(".chat-item");
       if (item && event.target.closest(".ci-title")) {

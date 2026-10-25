@@ -15,13 +15,28 @@ class EventBus(object):
         self._listeners = []
         self._max_history = max_history
         self._seq = 0
+        self._chat_resolver = None
+
+    def set_chat_resolver(self, resolver):
+        """resolver() -> chat_id для событий без явного chat_id (см. Context)."""
+        self._chat_resolver = resolver
+
+    def _default_chat(self):
+        if self._chat_resolver is not None:
+            try:
+                chat_id = self._chat_resolver()
+                if chat_id:
+                    return chat_id
+            except Exception:
+                Logger.logException("Не удалось определить чат события")
+        return "default"
 
     def subscribe(self, listener):
         with self._lock:
             self._listeners.append(listener)
 
     def emit(self, event_type, payload=None, **kwargs):
-        chat_id = kwargs.pop("chat_id", "default")
+        chat_id = kwargs.pop("chat_id", None) or self._default_chat()
         data = (
             dict(payload)
             if isinstance(payload, dict)

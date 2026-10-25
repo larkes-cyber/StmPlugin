@@ -18,7 +18,22 @@ class MainThreadAborted(Exception):
 
 
 def bind_wait_chat(chat_id):
+    """Привязывает текущий поток к чату (воркер чата). None — отвязать."""
     _wait_local.chat_id = chat_id
+
+
+def current_chat():
+    """Чат, чей воркер выполняется в текущем потоке, или None."""
+    return getattr(_wait_local, "chat_id", None)
+
+
+def bind_tool(name):
+    """Запоминает инструмент, который сейчас выполняет поток (для статуса «в очереди»)."""
+    _wait_local.tool = name
+
+
+def current_tool():
+    return getattr(_wait_local, "tool", None)
 
 
 def abort_chat_waits(chat_id):

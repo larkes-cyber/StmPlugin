@@ -6,7 +6,7 @@ from UM.Mesh.MeshWriter import MeshWriter
 from UM.PluginRegistry import PluginRegistry
 
 from ..ai import ToolError
-from ..core import Logger, config
+from ..core import Logger, config, is_main_thread
 
 TEMPERATURE_PATTERN = re.compile(r"[ST]([0-9]+(?:\.[0-9]+)?)")
 DEFAULT_GCODE_NAME = "result.gcode"
@@ -64,6 +64,21 @@ def check_gcode_header(path, max_bytes=256 * 1024):
     return stats
 
 
+def _write_with(writer, path, nodes, mode, binary):
+    """Писатели STE (GCodeWriter, 3MFWriter) ждут открытый поток, а не путь к файлу.
+
+    Вызывать только из фонового потока: внутри писателей стоит @call_on_qt_thread, который всегда
+    ставит работу в очередь главного потока и ждёт её — из главного потока это вечное ожидание.
+    """
+    if is_main_thread():
+        raise ToolError("Экспорт нельзя запускать из главного потока слайсера")
+    if binary:
+        with open(path, "wb") as stream:
+            return writer.write(stream, nodes, mode)
+    with open(path, "w", encoding="utf-8", newline="") as stream:
+        return writer.write(stream, nodes, mode)
+
+
 class SlicerExporter(object):
     def __init__(self, events):
         self._events = events
@@ -94,7 +109,7 @@ class SlicerExporter(object):
 
         temp_path = out_path + ".part"
         try:
-            success = writer.write(temp_path, nodes, MeshWriter.OutputMode.TextMode)
+            success = _write_with(writer, temp_path, nodes, MeshWriter.OutputMode.TextMode, binary=False)
             if (
                 not success
                 or not os.path.exists(temp_path)
@@ -131,7 +146,7 @@ class SlicerExporter(object):
         nodes = [app.getController().getScene().getRoot()]
         temp_path = out_path + ".part"
         try:
-            success = writer.write(temp_path, nodes, MeshWriter.OutputMode.BinaryMode)
+            success = _write_with(writer, temp_path, nodes, MeshWriter.OutputMode.BinaryMode, binary=True)
             if (
                 not success
                 or not os.path.exists(temp_path)

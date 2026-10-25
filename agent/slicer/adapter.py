@@ -1,5 +1,4 @@
 import os
-import threading
 import time
 
 from steslicer.SteSlicerApplication import SteSlicerApplication
@@ -10,6 +9,7 @@ from ..core import Logger, config, on_main, run_on_main
 from ..core.dispatcher import main_waits_aborted
 from ..uploads import resolve_model_path
 from .exporter import SlicerExporter
+from .gate import SlicerGate
 from .scene import SlicerScene
 from .settings import MODE_LABELS, SlicerSettings
 
@@ -39,15 +39,17 @@ def _app():
 class SlicerAPI(object):
     """
     Главный фасад для взаимодействия с ядром Uranium и CuraEngine.
-    Защищён мьютексом _slicer_lock от Data Race при обращении из разных потоков и чатов.
+
+    Воркеры чатов работают параллельно, но в слайсер ходят по одному: все обращения идут под
+    _slicer_lock (SlicerGate). Пока слайсер занят, остальные чаты ждут в очереди и видят это в статусе.
     """
 
     def __init__(self, events, config_obj=None):
         self._events = events
         self._config = config_obj or config
 
-        # Тот самый мьютекс защиты сцены и настроек от Data Race:
-        self._slicer_lock = threading.Lock()
+        # Мьютекс слайсера с очередью: реентерабельный, ожидание прерывается «Стопом»
+        self._slicer_lock = SlicerGate(events)
 
         # Подсистемы
         self.scene = SlicerScene(events)
@@ -193,6 +195,12 @@ class SlicerAPI(object):
         return result
     # 3. Управление слайсингом через Backend
     def start_slicing(self, wait=True, timeout=None):
+        # Слайсер занят на весь слайсинг, а не только на запуск: иначе другой чат может поменять
+        # сцену или настройки, пока CuraEngine режет
+        with self._slicer_lock:
+            return self._slice_and_wait(wait, timeout)
+
+    def _slice_and_wait(self, wait, timeout):
         slice_timeout = float(timeout or self._config.get("slice_timeout", 300.0))
         run_on_main(self._start_slice)
         if not wait:

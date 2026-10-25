@@ -31,6 +31,10 @@ class ChatManager(object):
         self._chats = {}
         self._active_id = None
         self._running_ids = set()
+        # Текущий статус работающих чатов (thinking / tool / queued + детали). Событие status не
+        # хранится в истории, поэтому без этого интерфейс не знает состояние чата после переключения.
+        self._status_lock = threading.Lock()
+        self._statuses = {}
 
         self._load()
         recent = self._most_recent() or self._add_chat()
@@ -73,6 +77,7 @@ class ChatManager(object):
                 "active_id": self._active_id,
                 "running_id": next(iter(self._running_ids), None),
                 "running_ids": list(self._running_ids),
+                "statuses": self.statuses(),
                 "seq": getattr(self._events, "_seq", 0),
                 "session": getattr(self._events, "session", ""),
             }
@@ -168,7 +173,26 @@ class ChatManager(object):
             chat.saved_messages = json_copy(chat.messages)
             self._mark_dirty(chat)
 
+    def statuses(self):
+        with self._status_lock:
+            return dict((chat_id, dict(status)) for chat_id, status in self._statuses.items())
+
+    def _remember_status(self, chat_id, event):
+        state = event.get("state")
+        with self._status_lock:
+            if state in (None, "idle"):
+                self._statuses.pop(chat_id, None)
+                return
+            status = {"state": state, "tool": event.get("tool")}
+            if state == "queued":
+                status["holder_chat"] = event.get("holder_chat")
+                status["holder_title"] = event.get("holder_title")
+                status["holder_tool"] = event.get("holder_tool")
+            self._statuses[chat_id] = status
+
     def end_run(self, chat):
+        with self._status_lock:
+            self._statuses.pop(chat.id, None)
         with self._lock:
             self._running_ids.discard(chat.id)
             chat.updated = time.time()
@@ -184,6 +208,8 @@ class ChatManager(object):
             return
 
         event_type = event.get("type")
+        if event_type == "status":
+            self._remember_status(target_id, event)
         if event_type in TRANSIENT_EVENTS:
             return
 

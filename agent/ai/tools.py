@@ -3,6 +3,7 @@ import threading
 import time
 
 from ..core import Logger
+from ..core.dispatcher import bind_tool
 
 
 class ToolError(Exception):
@@ -108,8 +109,14 @@ class ToolRegistry(object):
             source=source,
         )
 
+        if chat_id:
+            self._emit("status", chat_id=chat_id, state="tool", tool=name)
+        bind_tool(name)
         started_at = time.time()
-        outcome = self._execute(name, arguments, chat_id)
+        try:
+            outcome = self._execute(name, arguments, chat_id)
+        finally:
+            bind_tool(None)
         duration = round(time.time() - started_at, 2)
 
         result_for_chat = _hide_image(outcome.get("result"))

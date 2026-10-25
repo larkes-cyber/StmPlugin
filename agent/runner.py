@@ -241,6 +241,9 @@ class AgentRunner(object):
                         if self._slicer and hasattr(self._slicer, "sync_for_chat"):
                             self._slicer.sync_for_chat(chat)
 
+                        if name == "export_results":
+                            args["chat"] = chat
+
                         tool_outcome = self._registry.call(
                             name, args, source="agent", call_id=call_id, chat_id=chat_id
                         )

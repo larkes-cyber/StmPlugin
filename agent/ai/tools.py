@@ -602,6 +602,7 @@ def _add_slicing_tools(registry, slicer):
         function=slicer.export_results,
         properties={
             "model_name": MODEL_NAME,
+            "chat": {"type": "object", "description": "Внутренняя ссылка на сессию чата"},
         },
         required=["model_name"],
         group="slicing",

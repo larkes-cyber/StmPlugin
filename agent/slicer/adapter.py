@@ -314,7 +314,7 @@ class SlicerAPI(object):
         with self._slicer_lock:
             return self.exporter.save_project_3mf(path, model_name)
 
-    def export_results(self, model_name):
+    def export_results(self, model_name, chat=None):
         with self._slicer_lock:
             res = {}
             try:
@@ -325,6 +325,20 @@ class SlicerAPI(object):
                 res["project"] = self.save_project_3mf(model_name=model_name)
             except Exception as e:
                 res["project_error"] = str(e)
+
+            # Сохраняем скриншот детали
+            try:
+                res["snapshot"] = self.exporter.save_snapshot(self.scene, model_name=model_name)
+            except Exception as e:
+                res["snapshot_error"] = str(e)
+
+            # Сохраня��м историю переписки
+            if chat:
+                try:
+                    res["dialog"] = self.exporter.save_dialog_history(chat, model_name=model_name)
+                except Exception as e:
+                    res["dialog_error"] = str(e)
+
             return res
 
     def analyze_geometry(self, object_id=None, support_angle=None):

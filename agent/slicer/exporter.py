@@ -149,9 +149,56 @@ class SlicerExporter(object):
                     pass
             raise
 
-        size_kb = round(os.path.getsize(out_path) / 1024.0, 1)
-        Logger.log("i", "Проект 3MF успешно сохранён в %s (%.1f КБ)", out_path, size_kb)
-        self._events.emit(
-            "file_saved", {"kind": "3mf", "path": out_path, "size_kb": size_kb}
-        )
-        return {"path": out_path, "size_kb": size_kb}
+    def save_snapshot(self, scene, model_name=None, size=1024):
+        """Сохраняет PNG-скриншот сцены в папку результатов."""
+        out_path = self.get_output_path(None, model_name, "snapshot.png")
+        try:
+            png_bytes = run_on_main(lambda: scene._snapshot_png(size))
+            with open(out_path, "wb") as f:
+                f.write(png_bytes)
+            Logger.log("i", "Снимок сцены сохранён в %s", out_path)
+            self._events.emit("file_saved", {"kind": "snapshot", "path": out_path})
+            return {"path": out_path}
+        except Exception as e:
+            Logger.log("w", "Не удалось сохранить снимок сцены: %s", e)
+            return {"error": str(e)}
+
+    def save_dialog_history(self, chat, model_name=None):
+        """Сохраняет текстовую историю переписки в папку результатов."""
+        if not chat or not chat.messages:
+            return {"error": "Нет сообщений в чате"}
+
+        out_path = self.get_output_path(None, model_name, "dialog.txt")
+        try:
+            lines = [
+                "============================================================",
+                "Отчёт по подготовке детали: %s" % (model_name or chat.title or "Деталь"),
+                "Дата: %s" % time.strftime("%Y-%m-%d %H:%M:%S"),
+                "ID чата: %s" % chat.id,
+                "============================================================\n",
+            ]
+
+            for msg in chat.messages:
+                role = msg.get("role")
+                if role == "system":
+                    continue
+                content = msg.get("content") or ""
+                if isinstance(content, list):
+                    # Извлекаем текст из мультимодальных частей
+                    texts = [p.get("text", "") for p in content if p.get("type") == "text"]
+                    content = "\n".join(texts)
+
+                role_label = "Пользователь" if role == "user" else ("Ассистент" if role == "assistant" else "Инструмент")
+                lines.append("[%s]:" % role_label)
+                lines.append(content.strip())
+                lines.append("-" * 40)
+
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+
+            Logger.log("i", "История переписки сохранена в %s", out_path)
+            self._events.emit("file_saved", {"kind": "dialog", "path": out_path})
+            return {"path": out_path}
+        except Exception as e:
+            Logger.log("w", "Не удалось сохранить историю переписки: %s", e)
+            return {"error": str(e)}

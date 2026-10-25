@@ -14,6 +14,21 @@ from .core.dispatcher import (
     clear_main_waits_abort,
 )
 
+SLICER_EXCLUSIVE_TOOLS = (
+    "start_slicing",
+    "get_slicing_result",
+    "export_gcode",
+    "save_project_3mf",
+    "export_results",
+    "load_model",
+    "get_scene_snapshot",
+    "apply_orientation",
+    "center_object",
+    "move_object",
+    "rotate_object",
+    "scale_object",
+    "delete_object",
+)
 MAX_STEPS = 40
 MAX_TOOL_RESULT_CHARS = 12000
 
@@ -231,14 +246,15 @@ class AgentRunner(object):
                     except Exception:
                         args = {}
 
-                    # Эксклюзивная очередь к столу и слайсеру:
-                    gate_ctx = self._slicer.gate(chat_id) if hasattr(self._slicer, "gate") else None
+                    # Захватываем стол ТОЛЬКО для физических инструментов, требующих сцену Cura:
+                    needs_slicer = name in SLICER_EXCLUSIVE_TOOLS
+                    gate_ctx = self._slicer.gate(chat_id) if (needs_slicer and hasattr(self._slicer, "gate")) else None
                     if gate_ctx:
                         gate_ctx.__enter__()
 
                     try:
-                        # Гарантируем, что перед вызовом инструмента сцена принадлежит этому чату:
-                        if self._slicer and hasattr(self._slicer, "sync_for_chat"):
+                        # Синхронизируем сцену только если инструмент действительно трогает стол:
+                        if needs_slicer and self._slicer and hasattr(self._slicer, "sync_for_chat"):
                             self._slicer.sync_for_chat(chat)
 
                         if name == "export_results":

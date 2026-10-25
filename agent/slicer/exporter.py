@@ -6,7 +6,7 @@ from UM.Mesh.MeshWriter import MeshWriter
 from UM.PluginRegistry import PluginRegistry
 
 from ..ai import ToolError
-from ..core import Logger, config
+from ..core import Logger, config, run_on_main
 
 TEMPERATURE_PATTERN = re.compile(r"[ST]([0-9]+(?:\.[0-9]+)?)")
 DEFAULT_GCODE_NAME = "result.gcode"

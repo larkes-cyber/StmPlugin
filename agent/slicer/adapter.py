@@ -268,17 +268,34 @@ class SlicerAPI(object):
             return {"state": "processing"}
 
         deadline = time.time() + slice_timeout
+        pending_since = None
+        restarts = 0
+
         while time.time() < deadline:
             if main_waits_aborted():
                 raise ToolError("Остановлено пользователем")
-            time.sleep(0.25)
+            time.sleep(0.3)
             state = self._slice["state"]
+
             if state == "done":
                 result = run_on_main(self._result_dict)
                 Logger.log("i", "Слайсинг завершён успешно: %s", result)
                 return result
+
             if state in ("error", "disabled"):
                 raise ToolError("Слайсинг не выполнен: статус '%s'. Проверьте положение модели на столе" % state)
+
+            # Сторож: если бэкенд застрял в pending, пинаем его повторно
+            if state in ("pending", "notstarted", "idle"):
+                if pending_since is None:
+                    pending_since = time.time()
+                elif time.time() - pending_since > 3.0 and restarts < 3:
+                    restarts += 1
+                    pending_since = None
+                    Logger.log("w", "Бэкенд завис в %s, повторный запуск нарезки (%d)", state, restarts)
+                    run_on_main(self._start_slice)
+            else:
+                pending_since = None
 
         raise ToolError("Слайсинг не завершился за %d с" % int(slice_timeout))
 
@@ -500,8 +517,15 @@ class SlicerAPI(object):
         self._slice["progress"] = 0.0
         self._slice["started"] = time.time()
         self._slice["finished"] = None
-        self._events.emit("slice_state", {"state": "processing"})
+        self._events.emit("slice_state", {"state": "processing"}, chat_id=self._active_chat_id)
+
         backend.forceSlice()
+        try:
+            controller = _app().getController()
+            if hasattr(controller, "getBackend") and controller.getBackend():
+                controller.getBackend().slice()
+        except Exception:
+            pass
 
     def _on_backend_state_change(self, backend_state):
         state_str = BACKEND_STATE_NAMES.get(backend_state)

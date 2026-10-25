@@ -257,41 +257,42 @@ class SlicerAPI(object):
     # 3. Управление слайсингом через Backend
     def start_slicing(self, wait=True, timeout=None):
         slice_timeout = float(timeout or self._config.get("slice_timeout", 300.0))
-        run_on_main(self._start_slice)
-        if not wait:
-            return {"state": "processing"}
+        with self._slicer_lock:
+            run_on_main(self._start_slice)
+            if not wait:
+                return {"state": "processing"}
 
-        deadline = time.time() + slice_timeout
-        pending_since = None
-        restarts = 0
+            deadline = time.time() + slice_timeout
+            pending_since = None
+            restarts = 0
 
-        while time.time() < deadline:
-            if main_waits_aborted():
-                raise ToolError("Остановлено пользователем")
-            time.sleep(0.3)
-            state = self._slice["state"]
+            while time.time() < deadline:
+                if main_waits_aborted():
+                    raise ToolError("Остановлено пользователем")
+                time.sleep(0.3)
+                state = self._slice["state"]
 
-            if state == "done":
-                result = run_on_main(self._result_dict)
-                Logger.log("i", "Слайсинг завершён успешно: %s", result)
-                return result
+                if state == "done":
+                    result = run_on_main(self._result_dict)
+                    Logger.log("i", "Слайсинг завершён успешно: %s", result)
+                    return result
 
-            if state in ("error", "disabled"):
-                raise ToolError("Слайсинг не выполнен: статус '%s'. Проверьте положение модели на столе" % state)
+                if state in ("error", "disabled"):
+                    raise ToolError("Слайсинг не выполнен: статус '%s'. Проверьте положение модели на столе" % state)
 
-            # Сторож: если бэкенд застрял в pending, пинаем его повторно
-            if state in ("pending", "notstarted", "idle"):
-                if pending_since is None:
-                    pending_since = time.time()
-                elif time.time() - pending_since > 3.0 and restarts < 3:
-                    restarts += 1
+                # Сторож: если бэкенд застрял в pending, пинаем его повторно
+                if state in ("pending", "notstarted", "idle"):
+                    if pending_since is None:
+                        pending_since = time.time()
+                    elif time.time() - pending_since > 3.0 and restarts < 3:
+                        restarts += 1
+                        pending_since = None
+                        Logger.log("w", "Бэкенд завис в %s, повторный запуск нарезки (%d)", state, restarts)
+                        run_on_main(self._start_slice)
+                else:
                     pending_since = None
-                    Logger.log("w", "Бэкенд завис в %s, повторный запуск нарезки (%d)", state, restarts)
-                    run_on_main(self._start_slice)
-            else:
-                pending_since = None
 
-        raise ToolError("Слайсинг не завершился за %d с" % int(slice_timeout))
+            raise ToolError("Слайсинг не завершился за %d с" % int(slice_timeout))
 
     def get_slicing_status(self):
         status = dict(self._slice)

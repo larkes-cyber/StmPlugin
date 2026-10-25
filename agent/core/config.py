@@ -22,6 +22,7 @@ DEFAULT_SETTINGS = {
     "slice_timeout": 300.0,
     "write_timeout": 60.0,
     "load_timeout": 30.0,
+    "max_workers": 4,
     "chats_dir_name": "ai_assistant_chats",
     "chats_save_delay": 2.0,
     "chats_max_events": 3000,
@@ -117,9 +118,12 @@ class Config(object):
         if new_settings.get("clear_api_key"):
             self.set("api_key", "")
 
-    def public_dict(self) -> Dict[str, Any]:
+    def public_dict(self):
         data = {k: self.get(k) for k in DEFAULT_SETTINGS if k != "api_key"}
-        data["api_key_set"] = bool(self.get("api_key"))
+        api_key = str(self.get("api_key") or "").strip()
+        data["api_key_set"] = bool(api_key)
+        data["api_key_hint"] = ("…" + api_key[-4:]) if len(api_key) >= 4 else ("✓" if api_key else "")
+        data["llm_ready"] = self.llm_ready()
         data["name"] = self.name
         data["version"] = self.version
         return data

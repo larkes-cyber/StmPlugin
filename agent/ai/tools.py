@@ -1,3 +1,4 @@
+import inspect
 import threading
 import time
 
@@ -93,17 +94,22 @@ class ToolRegistry(object):
             )
         return result
 
-    def call(self, name, args=None, source="agent", call_id=None):
+    def call(self, name, args=None, source="agent", call_id=None, chat_id=None):
         call_id = self._next_call_id(source, call_id)
         arguments = args if args is not None else {}
 
         Logger.log("d", "tool → %s [%s, %s] args=%s", name, source, call_id, arguments)
         self._emit(
-            "tool_call", call_id=call_id, name=name, args=arguments, source=source
+            "tool_call",
+            chat_id=chat_id,
+            call_id=call_id,
+            name=name,
+            args=arguments,
+            source=source,
         )
 
         started_at = time.time()
-        outcome = self._execute(name, arguments)
+        outcome = self._execute(name, arguments, chat_id)
         duration = round(time.time() - started_at, 2)
 
         result_for_chat = _hide_image(outcome.get("result"))
@@ -118,6 +124,7 @@ class ToolRegistry(object):
 
         self._emit(
             "tool_result",
+            chat_id=chat_id,
             call_id=call_id,
             name=name,
             ok=outcome["ok"],
@@ -135,7 +142,7 @@ class ToolRegistry(object):
                 return call_id
             return "%s_%d" % (source, self._call_counter)
 
-    def _execute(self, name, arguments):
+    def _execute(self, name, arguments, chat_id=None):
         tool = self._tools_by_name.get(name)
         if tool is None:
             return {"ok": False, "error": "Неизвестный инструмент: %s" % name}
@@ -153,6 +160,8 @@ class ToolRegistry(object):
         known_arguments = {
             key: value for key, value in arguments.items() if key in tool.properties
         }
+        if chat_id and _accepts_argument(tool.function, "chat_id"):
+            known_arguments["chat_id"] = chat_id
         try:
             return {"ok": True, "result": tool.function(**known_arguments)}
         except ToolError as error:
@@ -162,8 +171,21 @@ class ToolRegistry(object):
             return {"ok": False, "error": "%s: %s" % (type(error).__name__, error)}
 
     def _emit(self, event_type, **data):
-        if self._events is not None:
-            self._events.emit(event_type, **data)
+        if self._events is None:
+            return
+        chat_id = data.pop("chat_id", None)
+        if chat_id:
+            self._events.emit(event_type, data, chat_id=chat_id)
+        else:
+            self._events.emit(event_type, data)
+
+
+def _accepts_argument(function, name):
+    try:
+        spec = inspect.getfullargspec(function)
+    except TypeError:
+        return False
+    return name in spec.args
 
 
 def string_param(description, choices=None):
@@ -333,8 +355,8 @@ def _add_settings_tools(registry, slicer):
         function=slicer.set_material,
         properties={
             "material_id": string_param("id материала из list_materials"),
+            "id": string_param("То же, что material_id"),
         },
-        required=["material_id"],
         group="settings",
     )
     registry.add(
@@ -528,7 +550,10 @@ def _add_analysis_tools(registry, slicer):
 def _add_slicing_tools(registry, slicer):
     registry.add(
         name="start_slicing",
-        description="Запустить слайсинг. По умолчанию ждёт завершения и возвращает время печати и расход материала.",
+        description=(
+            "Запустить слайсинг один раз после request_user_review. Ждёт завершения и возвращает время "
+            "печати и расход. Повторный вызов нарезает модель заново и сбрасывает прогресс."
+        ),
         function=slicer.start_slicing,
         properties={
             "wait": boolean_param("Ждать завершения (по умолчанию true)"),

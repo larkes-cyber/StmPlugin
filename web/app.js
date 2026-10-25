@@ -48,12 +48,13 @@
   const ALLOWED_EXTENSIONS = ["stl", "obj", "3mf", "jpg", "jpeg", "png", "docx", "txt", "md"];
   const DOCUMENT_EXTENSIONS = ["docx", "txt", "md"];
   const IMAGE_EXTENSION_PATTERN = /^(jpg|jpeg|png)$/;
-  const HTML2CANVAS_URL = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+  const HTML2CANVAS_URL = "/vendor/html2canvas.min.js";
 
   const element = (id) => document.getElementById(id);
 
   let lastEventSeq = 0;
   let serverSession = null;
+  let sliceOpen = false;
   let toolCards = {};
   let reviewCards = {};
   let attachments = [];
@@ -62,10 +63,9 @@
   let dragDepth = 0;
   const welcomeHtml = element("messages").innerHTML;
 
-  // Чаты проекта. Агент один на всю сцену: работает не больше чем в одном чате.
+  // Чаты идут параллельно. У каждого свой флаг запуска.
   let chats = [];
-  let runningChatId = null;
-  let agentBusy = false;
+  let runningIds = new Set();
   let agentState = { state: "idle", tool: null, chatId: null };
   let sending = false;
   // Открытый чат: история приходит одним запросом, живые события — через общий long-polling.
@@ -297,35 +297,53 @@
         <div class="t-result"></div>
       </div>`;
 
-    toolCards[event.call_id] = card;
+    toolCards[toolCallId(event)] = card;
     appendToChat(card);
   }
 
-  function renderToolResult(event) {
-    if (!toolCards[event.call_id]) {
-      renderToolCall({ call_id: event.call_id, name: event.name, args: {}, source: event.source });
+  function toolCallId(event) {
+    if (event.call_id) {
+      return event.call_id;
     }
-    const card = toolCards[event.call_id];
+    const storedId = event.data && event.data.id;
+    if (typeof storedId === "string") {
+      return storedId;
+    }
+    return event.id;
+  }
 
-    card.className = event.ok ? "tool ok" : "tool fail";
-    const icon = card.querySelector(".t-icon");
-    if (event.ok) {
-      icon.innerHTML = '<img src="icons/check-outline.svg" alt="success" class="status-icon" />';
-    } else {
-      icon.textContent = "✕";
+  function toolOutcome(event) {
+    const nested = event.result && typeof event.result.ok === "boolean" ? event.result : null;
+    const ok = typeof event.ok === "boolean" ? event.ok : Boolean(nested && nested.ok);
+    return {
+      ok,
+      error: event.error || (nested && nested.error) || "",
+      result: nested ? nested.result : event.result,
+    };
+  }
+
+  function renderToolResult(event) {
+    const callId = toolCallId(event);
+    if (!toolCards[callId]) {
+      renderToolCall({ call_id: callId, name: event.name, args: event.args || {}, source: event.source });
     }
+    const card = toolCards[callId];
+    const outcome = toolOutcome(event);
+
+    card.className = outcome.ok ? "tool ok" : "tool fail";
+    card.querySelector(".t-icon").textContent = outcome.ok ? "✓" : "✕";
     card.querySelector(".t-meta").textContent = event.duration !== null && event.duration !== undefined
       ? `${event.duration} с`
       : "";
 
-    let body = event.ok ? JSON.stringify(event.result, null, 2) : event.error;
+    let body = outcome.ok ? JSON.stringify(outcome.result, null, 2) : outcome.error;
     if (body && body.length > 20000) {
       body = body.slice(0, 20000) + "\n…";
     }
-    const title = event.ok ? "результат" : "ошибка";
+    const title = outcome.ok ? "результат" : "ошибка";
     card.querySelector(".t-result").innerHTML = `<div class="t-label">${title}</div><pre>${escapeHtml(body)}</pre>`;
 
-    if (!event.ok) {
+    if (!outcome.ok) {
       card.open = true;
     }
     if (STATE_CHANGING_TOOLS.test(event.name)) {
@@ -393,17 +411,27 @@
     appendToChat(createDiv("card", html));
   }
 
+  function attachmentLabel(item) {
+    if (typeof item === "string") {
+      return item;
+    }
+    if (item && item.name) {
+      return item.name;
+    }
+    if (item && item.kind === "image") {
+      return "изображение";
+    }
+    return "";
+  }
+
   function renderUserMessage(event) {
     const message = appendToChat(createDiv("msg user"));
     message.textContent = event.text || "";
 
-    if (event.attachments && event.attachments.length > 0) {
+    const labels = (event.attachments || []).map(attachmentLabel).filter(Boolean);
+    if (labels.length > 0) {
       const attachmentLine = createDiv("att");
-      const icon = document.createElement("img");
-      icon.className = "load-icon";
-      icon.src = "icons/load.svg";
-      icon.alt = "";
-      attachmentLine.append(icon, document.createTextNode(" " + event.attachments.join(", ")));
+      attachmentLine.textContent = "📎 " + labels.join(", ");
       message.appendChild(attachmentLine);
     }
   }
@@ -480,6 +508,8 @@
     }
 
     const first = objects[0];
+    const center = first.center_mm || {};
+    const scale = first.scale_pct || {};
     const objectChoices = objects.map((object) => ({
       value: object.object_id,
       label: `${object.object_id} ${object.name}`,
@@ -489,9 +519,9 @@
       <fieldset>
         <legend>Размещение модели</legend>
         <label>Объект ${selectHtml("object_id", objectChoices, first.object_id)}</label>
-        <label>Центр X, мм ${numberInputHtml("x", first.center_mm.x)}</label>
-        <label>Центр Y, мм ${numberInputHtml("y", first.center_mm.y)}</label>
-        <label>Масштаб, % ${numberInputHtml("scale_percent", first.scale_pct.x)}</label>
+        <label>Центр X, мм ${numberInputHtml("x", center.x)}</label>
+        <label>Центр Y, мм ${numberInputHtml("y", center.y)}</label>
+        <label>Масштаб, % ${numberInputHtml("scale_percent", scale.x)}</label>
         <label>Повернуть вокруг X, ° ${numberInputHtml("rotate_x", 0)}</label>
         <label>Повернуть вокруг Y, ° ${numberInputHtml("rotate_y", 0)}</label>
         <label>Повернуть вокруг Z, ° ${numberInputHtml("rotate_z", 0)}</label>
@@ -639,15 +669,28 @@
 
   function setSliceBar(state, progress) {
     const bar = element("slice-bar");
-    if (state !== "processing") {
+    const percent = Math.round((progress || 0) * 100);
+    if (state !== "processing" || percent >= 100) {
+      sliceOpen = false;
       bar.classList.add("hidden");
       return;
     }
 
+    sliceOpen = true;
     bar.classList.remove("hidden");
-    const percent = Math.round((progress || 0) * 100);
     element("slice-progress").style.width = percent + "%";
     element("slice-pct").textContent = percent + "%";
+    element("slice-label").textContent = percent === 0 ? "Новый слайсинг…" : "Слайсинг…";
+  }
+
+  function isOpenChatEvent(event) {
+    if (!view.chatId) {
+      return false;
+    }
+    if (!event.chat_id || event.chat_id === "default" || event.chat_id === view.chatId) {
+      return true;
+    }
+    return false;
   }
 
   function statusText(state, tool) {
@@ -666,28 +709,17 @@
     return "Готов";
   }
 
-  function chatTitle(chatId) {
-    const chat = chats.find((item) => item.id === chatId);
-    return chat ? chat.title : "другой чат";
-  }
-
   function renderStatus() {
     const pill = element("status");
-    const runningHere = agentBusy && runningChatId === view.chatId;
-    const runningElsewhere = agentBusy && Boolean(runningChatId) && runningChatId !== view.chatId;
+    const runningHere = runningIds.has(view.chatId);
 
     pill.className = "pill";
     pill.title = "";
     pill.onclick = null;
     if (runningHere) {
-      const state = agentState.state === "idle" ? "thinking" : agentState.state;
+      const ownState = agentState.chatId === view.chatId ? agentState.state : "thinking";
+      const state = ownState === "idle" ? "thinking" : ownState;
       pill.textContent = statusText(state, agentState.tool);
-    } else if (runningElsewhere) {
-      const waiting = agentState.state === "tool" && agentState.tool === "request_user_review";
-      pill.classList.add("elsewhere");
-      pill.textContent = `${waiting ? "Ждёт подтверждения" : "Работает"} в чате «${chatTitle(runningChatId)}»`;
-      pill.title = "Открыть этот чат";
-      pill.onclick = () => openChat(runningChatId);
     } else if (agentState.state === "error" && agentState.chatId === view.chatId) {
       pill.classList.add("error");
       pill.textContent = statusText("error");
@@ -698,28 +730,15 @@
 
     element("btn-send").classList.toggle("hidden", runningHere);
     element("btn-stop").classList.toggle("hidden", !runningHere);
-    element("btn-send").disabled = sending || runningElsewhere;
-    renderBusyNote(runningElsewhere);
-  }
-
-  function renderBusyNote(runningElsewhere) {
-    const note = element("busy-note");
-    note.classList.toggle("hidden", !runningElsewhere);
-    if (!runningElsewhere) {
-      return;
-    }
-    note.innerHTML = `Ассистент сейчас работает в чате «${escapeHtml(chatTitle(runningChatId))}». ` +
-      "Сцена слайсера общая, поэтому написать здесь можно, когда он закончит. " +
-      '<button type="button" class="linklike">Открыть тот чат</button>';
-    note.querySelector("button").onclick = () => openChat(runningChatId);
+    element("btn-send").disabled = sending;
+    element("busy-note").classList.add("hidden");
   }
 
   function handleStatusEvent(event) {
-    agentState = { state: event.state, tool: event.tool, chatId: event.chat_id };
-    agentBusy = event.state === "thinking" || event.state === "tool";
-    if (agentBusy) {
-      runningChatId = event.chat_id;
+    if (event.chat_id && event.chat_id !== view.chatId) {
+      return;
     }
+    agentState = { state: event.state, tool: event.tool, chatId: event.chat_id };
     renderStatus();
   }
 
@@ -829,13 +848,15 @@
       return;
     }
     if (event.type === "slice_progress") {
-      setSliceBar("processing", event.progress);
+      if (sliceOpen) {
+        setSliceBar("processing", event.progress);
+      }
       return;
     }
 
-    if (event.chat_id !== view.chatId) {
+    if (!isOpenChatEvent(event)) {
       if (event.type === "slice_state") {
-        setSliceBar(event.state, 0);
+        setSliceBar(event.state, event.state === "processing" ? 0 : 1);
       }
       if (SHARED_STATE_EVENTS.includes(event.type) || event.type === "slice_state") {
         scheduleStateRefresh();
@@ -859,6 +880,9 @@
     try {
       const response = await fetch(`/api/events?since=${lastEventSeq}&wait=20&session=${serverSession}`);
       const data = await response.json();
+      if (!response.ok || !data.session) {
+        throw new Error(data.error || "События недоступны");
+      }
       if (data.session !== serverSession) {
         // Слайсер перезапустили: номера событий начались заново — перечитываем чаты.
         start();
@@ -870,7 +894,7 @@
         lastEventSeq = Math.max(lastEventSeq, event.id || event.seq || 0);
         dispatchEvent(event);
       });
-      syncAgentState(Boolean(data.busy), data.running_chat || null);
+      syncRunningChats(data.running_chats, data.running_chat);
       pollEvents();
     } catch (error) {
       const pill = element("status");
@@ -881,16 +905,26 @@
     }
   }
 
-  function syncAgentState(busy, chatId) {
-    if (busy === agentBusy && chatId === runningChatId) {
-      renderStatus();
+  function sameRunningSet(nextIds) {
+    if (nextIds.size !== runningIds.size) {
+      return false;
+    }
+    for (const id of nextIds) {
+      if (!runningIds.has(id)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function syncRunningChats(runningChats, runningChat) {
+    const nextIds = new Set(
+      Array.isArray(runningChats) ? runningChats : (runningChat ? [runningChat] : [])
+    );
+    if (sameRunningSet(nextIds)) {
       return;
     }
-    agentBusy = busy;
-    runningChatId = busy ? chatId : null;
-    if (!busy && agentState.state !== "error") {
-      agentState = { state: "idle", tool: null, chatId: null };
-    }
+    runningIds = nextIds;
     renderStatus();
     renderChatList();
   }
@@ -904,12 +938,13 @@
   }
 
   function handleChatsEvent(event) {
-    if (event.action === "run_started") {
-      agentBusy = true;
-      runningChatId = event.target;
-    } else if (event.action === "run_finished" && runningChatId === event.target) {
-      agentBusy = false;
-      runningChatId = null;
+    if (event.action === "run_started" && event.target) {
+      runningIds.add(event.target);
+    } else if (event.action === "run_finished" && event.target) {
+      runningIds.delete(event.target);
+      if (agentState.chatId === event.target) {
+        agentState = { state: "idle", tool: null, chatId: null };
+      }
     }
     renderStatus();
     scheduleChatsRefresh();
@@ -935,8 +970,9 @@
 
   function applyListing(listing) {
     chats = listing.chats || [];
-    runningChatId = listing.running_id || null;
-    agentBusy = Boolean(runningChatId);
+    runningIds = new Set(
+      listing.running_ids || chats.filter((chat) => chat.running).map((chat) => chat.id)
+    );
     renderChatList();
     renderStatus();
     updateDocumentTitle();
@@ -957,7 +993,7 @@
   }
 
   function chatMetaHtml(chat) {
-    if (chat.id === runningChatId) {
+    if (runningIds.has(chat.id) || chat.running) {
       return '<span class="spin"></span> работает';
     }
     if (chat.empty) {
@@ -978,7 +1014,7 @@
       item.className = "chat-item";
       item.dataset.id = chat.id;
       item.classList.toggle("active", chat.id === view.chatId);
-      item.classList.toggle("running", chat.id === runningChatId);
+      item.classList.toggle("running", runningIds.has(chat.id) || chat.running);
       item.classList.toggle("unread", unreadChats.has(chat.id));
       item.innerHTML = `
         <div class="ci-main">
@@ -1046,7 +1082,15 @@
   function showHistory(history) {
     resetChat();
     stickToBottom = true;
-    history.events.forEach((event) => handleEvent(event, true));
+    if (history.events.length === 0 && (history.chat.running || !history.chat.empty)) {
+      element("messages").innerHTML = "";
+      const text = history.chat.running
+        ? "Этот чат ещё числится запущенным, поэтому вместо «Отправить» стоит «Стоп». Нажмите «Стоп», чтобы освободить его. Лента прошлого запуска не сохранилась."
+        : "Лента этого чата не сохранилась. Можно отправить новое сообщение.";
+      appendToChat(createDiv("msg", escapeHtml(text)));
+    } else {
+      history.events.forEach((event) => handleEvent(event, true));
+    }
     finishReplay(history.chat.running);
 
     const queued = view.queue;
@@ -1125,7 +1169,7 @@
     if (!chat) {
       return;
     }
-    if (chatId === runningChatId) {
+    if (runningIds.has(chatId) || chat.running) {
       alert("В этом чате сейчас работает ассистент. Остановите его, затем удалите чат.");
       return;
     }
@@ -1184,16 +1228,30 @@
   }
 
   async function refreshState() {
+    const box = element("state");
     try {
       const data = await api("/api/state");
-      const box = element("state");
       if (!data.ok) {
         box.innerHTML = `<span class="muted">${escapeHtml(data.error)}</span>`;
         return;
       }
       box.innerHTML = stateHtml(data.state);
     } catch (error) {
-      return;
+      box.textContent = "Слайсер занят, повторяю запрос…";
+      clearTimeout(stateRefreshTimer);
+      stateRefreshTimer = setTimeout(refreshState, 5000);
+    }
+  }
+
+  async function stopRun() {
+    const button = element("btn-stop");
+    button.disabled = true;
+    try {
+      await api("/api/stop", { chat_id: view.chatId });
+    } catch (error) {
+      appendToChat(createDiv("msg error", "⚠ " + escapeHtml(error.message)));
+    } finally {
+      button.disabled = false;
     }
   }
 
@@ -1508,7 +1566,7 @@
       event.target.value = "";
     });
 
-    element("btn-stop").addEventListener("click", () => api("/api/stop", {}));
+    element("btn-stop").addEventListener("click", stopRun);
     element("btn-new-chat").addEventListener("click", createChat);
     element("btn-chats").addEventListener("click", () => element("chats").classList.toggle("open"));
     document.querySelector("main.chat").addEventListener("click", closeChatsDrawer);

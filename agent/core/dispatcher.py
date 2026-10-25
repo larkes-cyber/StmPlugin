@@ -1,11 +1,52 @@
 import functools
 import threading
+import time
 
 from UM.Application import Application
 
 from .config import config
 
 DEFAULT_TIMEOUT = 120.0
+_abort_main_waits = threading.Event()
+_abort_lock = threading.Lock()
+_aborted_chats = set()
+_wait_local = threading.local()
+
+
+class MainThreadAborted(Exception):
+    """Ожидание главного потока прервано кнопкой «Стоп»."""
+
+
+def bind_wait_chat(chat_id):
+    _wait_local.chat_id = chat_id
+
+
+def abort_chat_waits(chat_id):
+    with _abort_lock:
+        _aborted_chats.add(chat_id)
+
+
+def clear_chat_waits(chat_id):
+    with _abort_lock:
+        _aborted_chats.discard(chat_id)
+
+
+def abort_main_waits():
+    _abort_main_waits.set()
+
+
+def clear_main_waits_abort():
+    _abort_main_waits.clear()
+
+
+def main_waits_aborted():
+    if _abort_main_waits.is_set():
+        return True
+    chat_id = getattr(_wait_local, "chat_id", None)
+    if not chat_id:
+        return False
+    with _abort_lock:
+        return chat_id in _aborted_chats
 
 
 def is_main_thread():
@@ -41,12 +82,18 @@ def run_on_main(func, *args, **kwargs):
 
     app.callLater(_wrapper)
 
-    if not done.wait(timeout):
-        func_name = getattr(func, "__name__", str(func))
-        raise TimeoutError(
-            "The ‘%s’ operation in the main thread exceeded the %ss timeout"
-            % (func_name, timeout)
-        )
+    deadline = time.time() + float(timeout)
+    while not done.is_set():
+        if main_waits_aborted():
+            raise MainThreadAborted("Операция прервана")
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            func_name = getattr(func, "__name__", str(func))
+            raise TimeoutError(
+                "The ‘%s’ operation in the main thread exceeded the %ss timeout"
+                % (func_name, timeout)
+            )
+        done.wait(min(0.25, remaining))
 
     if "error" in outcome:
         raise outcome["error"]

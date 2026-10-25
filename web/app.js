@@ -78,6 +78,8 @@
   let view = { chatId: null, seen: new Set(), loading: false, queue: [] };
   const unreadChats = new Set();
   let chatsRefreshTimer = null;
+  // chat_id → путь к сохранённому G-code/3MF: туда же ляжет скриншот переписки после ответа агента
+  const pendingScreenshots = new Map();
   let renamingChatId = null;
 
   function escapeHtml(value) {
@@ -420,7 +422,7 @@
   }
 
   function renderSavedFile(event) {
-    const kind = event.kind === "gcode" ? "G-code" : "Проект 3MF";
+    const kind = { gcode: "G-code", screenshot: "Скриншот переписки" }[event.kind] || "Проект 3MF";
     let checkHtml = "";
     if (event.check) {
       const verdict = event.check.valid
@@ -899,6 +901,9 @@
         break;
       case "file_saved":
         renderSavedFile(event);
+        if (!replaying) {
+          rememberResultFolder(event);
+        }
         break;
       case "review_requested":
         renderReviewRequest(event);
@@ -1030,6 +1035,7 @@
       if (agentState.chatId === event.target) {
         agentState = { state: "idle", tool: null, chatId: null };
       }
+      saveChatScreenshot(event.target);
     }
     renderStatus();
     scheduleChatsRefresh();
@@ -1199,6 +1205,7 @@
     scrollToBottom();
     renderStatus();
     element("input").focus();
+    saveChatScreenshot(view.chatId);
   }
 
   async function createChat() {
@@ -1566,30 +1573,75 @@
     }
   }
 
-  function downloadScreenshot() {
+  function loadHtml2canvas() {
+    if (window.html2canvas) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = HTML2CANVAS_URL;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error("Не удалось загрузить html2canvas"));
+      document.head.appendChild(script);
+    });
+  }
+
+  // Снимок всей переписки открытого чата (а не только видимой части).
+  async function captureChat() {
+    await loadHtml2canvas();
+    const messages = element("messages");
     const background = getComputedStyle(document.body).backgroundColor;
-    window.html2canvas(element("messages"), { backgroundColor: background, scale: 1.5 }).then((canvas) => {
+    // браузеры не рисуют canvas выше ~16 тыс. пикселей — длинную переписку снимаем в меньшем масштабе
+    const scale = Math.min(1.5, 16000 / Math.max(messages.scrollHeight, 1));
+    return window.html2canvas(messages, {
+      backgroundColor: background,
+      scale: scale,
+      // html2canvas рисует содержимое свёрнутых <details> поверх соседних строк — убираем его в копии
+      onclone: (doc) => {
+        doc.querySelectorAll("details:not([open]) > :not(summary)").forEach((node) => node.remove());
+      },
+    });
+  }
+
+  async function takeScreenshot() {
+    try {
+      const canvas = await captureChat();
       const link = document.createElement("a");
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
       link.download = `chat_${timestamp}.png`;
       link.href = canvas.toDataURL("image/png");
       link.click();
-    });
+    } catch (error) {
+      alert(error.message + " — сделайте скриншот средствами ОС.");
+    }
   }
 
-  function takeScreenshot() {
-    if (window.html2canvas) {
-      downloadScreenshot();
+  // Агент сохранил G-code / 3MF — когда он закончит отвечать, кладём рядом скриншот всей переписки
+  // (в него попадает и итоговый ответ). Чат, открытый не сейчас, снимается, когда его откроют.
+  function rememberResultFolder(event) {
+    if (event.kind === "screenshot" || !event.path) {
       return;
     }
+    pendingScreenshots.set(event.chat_id || view.chatId, event.path);
+  }
 
-    const script = document.createElement("script");
-    script.src = HTML2CANVAS_URL;
-    script.onload = downloadScreenshot;
-    script.onerror = () => {
-      alert("Нет доступа к интернету для html2canvas — сделайте скриншот средствами ОС.");
-    };
-    document.head.appendChild(script);
+  async function saveChatScreenshot(chatId) {
+    const resultPath = pendingScreenshots.get(chatId);
+    if (!resultPath || view.chatId !== chatId || view.loading || runningIds.has(chatId)) {
+      return;
+    }
+    pendingScreenshots.delete(chatId);
+    await new Promise((resolve) => setTimeout(resolve, 500)); // дорисовать итоговый ответ и картинки
+    try {
+      const canvas = await captureChat();
+      await api("/api/chat_screenshot", {
+        chat_id: chatId,
+        result_path: resultPath,
+        data: canvas.toDataURL("image/png"),
+      });
+    } catch (error) {
+      appendWarningMessage("Не удалось сохранить скриншот переписки: " + error.message);
+    }
   }
 
   function bindExamples() {

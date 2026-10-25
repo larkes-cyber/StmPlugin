@@ -190,6 +190,42 @@ def handle_post_chats_delete(ctx, handler, body):
     handler.send_json(ctx.chats.delete(chat_id))
 
 
+def _inside_output_dir(ctx, folder):
+    root = os.path.realpath(ctx.config.get("output_dir"))
+    folder = os.path.realpath(folder)
+    try:
+        return os.path.commonpath([root, folder]) == root
+    except ValueError:  # разные диски в Windows
+        return False
+
+
+def handle_post_chat_screenshot(ctx, handler, body):
+    """Скриншот переписки (его делает браузер) — рядом с G-code и 3MF в папке результатов."""
+    result_path = body.get("result_path") or ""
+    data = body.get("data") or ""
+    folder = os.path.dirname(result_path)
+    if not folder or not data:
+        handler.send_json({"error": "Нужны result_path и data"}, status=400)
+        return
+    if not os.path.isdir(folder) or not _inside_output_dir(ctx, folder):
+        handler.send_json({"error": "Папка результатов не найдена в output_dir: %s" % folder}, status=400)
+        return
+
+    raw = base64.b64decode(data.split(",", 1)[-1])
+    if not raw.startswith(b"\x89PNG"):
+        handler.send_json({"error": "Ожидается PNG"}, status=400)
+        return
+
+    path = os.path.join(folder, "chat_%s.png" % time.strftime("%Y%m%d-%H%M%S"))
+    with open(path, "wb") as f:
+        f.write(raw)
+    size_kb = round(len(raw) / 1024.0, 1)
+    Logger.log("i", "Скриншот переписки сохранён в %s (%.1f КБ)", path, size_kb)
+    ctx.events.emit("file_saved", {"kind": "screenshot", "path": path, "size_kb": size_kb},
+                    chat_id=body.get("chat_id"))
+    handler.send_json({"ok": True, "path": path})
+
+
 ROUTES_GET = {
     "/api/events": handle_get_events,
     "/api/config": handle_get_config,
@@ -212,4 +248,5 @@ ROUTES_POST = {
     "/api/chats/select": handle_post_chats_select,
     "/api/chats/rename": handle_post_chats_rename,
     "/api/chats/delete": handle_post_chats_delete,
+    "/api/chat_screenshot": handle_post_chat_screenshot,
 }

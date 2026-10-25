@@ -76,16 +76,18 @@ class SlicerScene(object):
         if not nodes:
             raise ToolError("Сцена пуста — сначала загрузите модель (load_model)")
 
-        # Если на столе ровно одна деталь — всегда отдаем её
+        # Если на столе ровно одна деталь — ВСЕГДА отдаем её, игнорируя устаревшие obj1/obj2/obj6
         if len(nodes) == 1:
             return nodes[0]
 
-        for node in nodes:
-            if object_id in (self.object_id(node), node.getName()):
-                return node
+        # Если объектов несколько, ищем по ID или имени
+        if object_id and object_id not in ("auto", "current"):
+            for node in nodes:
+                if object_id in (self.object_id(node), node.getName()):
+                    return node
 
-        known_ids = ", ".join(self.object_id(node) for node in nodes)
-        raise ToolError("Объект '%s' не найден. Доступны: %s" % (object_id, known_ids))
+        # По умолчанию берем последний добавленный объект
+        return nodes[-1]
 
     def node_info(self, node):
         box = node.getBoundingBox()
@@ -269,16 +271,17 @@ class SlicerScene(object):
 
     @on_main
     def delete_object(self, object_id):
+        # Полное удаление разрешено только при явном указании пользователя
         if object_id == "all":
-            # Защита от случайного сноса стола: удаляем только если в сцене один объект
-            nodes = self.object_nodes()
-            if len(nodes) > 1:
-                raise ToolError("В сцене несколько объектов, укажите конкретный object_id для удаления")
             _app().deleteAll()
             self._object_ids.clear()
             self._next_object_num = 1
             self._events.emit("scene_changed", {"action": "delete_all", "objects": []})
             return {"deleted": "all"}
+
+        nodes = self.object_nodes()
+        if not nodes:
+            return {"deleted": "none"}
 
         node = self.find_node(object_id)
         info = self.node_info(node)
